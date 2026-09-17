@@ -1,0 +1,430 @@
+// lspfeat.nv — the requests a user makes with the keyboard: completion,
+// hover, definition, references, rename, formatting and semantic
+// tokens.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// EVERY ONE OF THEM STARTS WITH A DOCUMENT AND A POSITION
+//
+// Completion, hover, definition, references and rename all take
+// `textDocument` and `position` and nothing else that matters, so
+// `LspTextDocumentPosition` is one type and the five requests carry it.
+// The specification writes the two members out separately in each
+// request; collapsing them here means a server's dispatcher can hand
+// the same value to five handlers.
+//
+// A COMPLETION's `textEdit` IS NOT ITS `label`
+//
+// The list a user sees is the labels.  What is INSERTED when one is
+// chosen is the `text_edit`, over a range the server chose — and the
+// two differ constantly: a label of `println(…)` inserts `println($0)`,
+// a label of `HashMap` in Rust inserts `HashMap` and adds an import
+// somewhere else entirely.  A server that inserted the label produces
+// the right list and the wrong code.
+//
+// `additional_text_edits` is the import: edits applied ELSEWHERE in the
+// document at the same time, and they may not overlap the main edit.
+//
+// SEMANTIC TOKENS ARE DELTA-ENCODED, AND THAT IS THE WHOLE FORMAT
+//
+// `textDocument/semanticTokens/full` answers a flat array of integers,
+// five per token: the line DELTA from the previous token, the character
+// delta (from the previous token's start, or from the line start when
+// the line delta is non-zero), the length, the type index and the
+// modifier bitset.  Deltas, because a file of 50,000 tokens would
+// otherwise send 50,000 absolute line numbers that are almost all the
+// same.  The tokens must be sorted, and an unsorted array produces
+// nonsense rather than an error.
+//
+// `lspfeat.encode_tokens` is that encoding written once, taking
+// absolute tokens, because every server that hand-rolled it got the
+// second delta's base wrong.
+
+use lspbase
+
+// A document and a place in it: what five of the seven requests take.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     println(lspfeat.doc_position("file:///a.nv", lspbase.position(2, 4)).uri)
+// ```
+pub struct LspDocPosition
+    // The document's URI.
+    uri: Str
+    // Where the cursor is, in the negotiated position encoding.
+    position: lspbase.LspPosition
+
+// What kind of thing a completion offers, which decides its icon.
+//
+// The specification numbers twenty-five of these.  The eight below are
+// the ones a language server for a compiled language actually produces;
+// `completion_kind_code` answers the specification's number for each,
+// and a server needing one of the other seventeen — a colour, a file,
+// a snippet — is a server this enum does not cover yet.  That is named
+// here rather than discovered at the first body.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println(lspfeat.completion_kind_code(LspKindFunction))   // 3
+// ```
+pub enum LspCompletionKind
+    // A free function.
+    LspKindFunction
+    // A method on a type.
+    LspKindMethod
+    // A local binding or a parameter.
+    LspKindVariable
+    // A field of a struct.
+    LspKindField
+    // A struct, an enum or a trait.
+    LspKindType
+    // An enum variant.
+    LspKindEnumMember
+    // A module.
+    LspKindModule
+    // A language keyword.
+    LspKindKeyword
+
+// One thing a user may choose.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     let r = lspbase.at(lspbase.position(0, 0))
+//     println(lspfeat.completion("println", LspKindFunction, r, "println()").label)
+// ```
+pub struct LspCompletionItem
+    // What the user sees in the list.
+    label: Str
+    // What kind of thing it is, which decides the icon.
+    kind: LspCompletionKind
+    // A short line beside the label: a signature, a type.
+    detail: Str
+    // The documentation, shown in the pane beside the list.
+    documentation: lspbase.LspMarkupContent
+    // WHAT IS ACTUALLY INSERTED, and over which range.  Not the label:
+    // see this module's opening note.
+    text_edit: lspbase.LspTextEdit
+    // Edits applied elsewhere at the same time — the import a
+    // completion needs.  They may not overlap `text_edit`.
+    additional_text_edits: [lspbase.LspTextEdit]
+    // What the list is SORTED by, when it is not the label.  Empty
+    // means sort by the label.  A server that wants its own ordering
+    // has to say so here, because a client sorts the list itself and
+    // will not preserve the order the server sent.
+    sort_text: Str
+    // What the user's typing is MATCHED against, when it is not the
+    // label.  Empty means match the label.
+    filter_text: Str
+    // Whether this item is deprecated, which a client strikes through.
+    deprecated: Bool
+
+// A completion list, and whether it is all of them.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${lspfeat.completion_list([], true).is_incomplete}")
+// ```
+pub struct LspCompletionList
+    // TRUE when this list is not everything, so the client must ask
+    // again as the user types rather than filtering what it has.  A
+    // server that answered a truncated list with `false` gives a user
+    // a list that gets shorter and never gets right.
+    is_incomplete: Bool
+    // The items.
+    items: [LspCompletionItem]
+
+// What `textDocument/hover` answers.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     let m = lspbase.markup(LspMarkdown, "`x: Int`")
+//     println(lspfeat.hover(m, lspbase.at(lspbase.position(0, 0))).contents.value)
+// ```
+pub struct LspHover
+    // What to show.
+    contents: lspbase.LspMarkupContent
+    // What the hover is ABOUT, so the client can highlight it.  An
+    // empty range means the server does not say, and the client
+    // highlights whatever word it guessed — which is usually right and
+    // is wrong for an operator or a literal.
+    range: lspbase.LspRange
+
+// How a rename is offered before it is performed.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     let r = lspbase.at(lspbase.position(0, 0))
+//     println(lspfeat.rename_target(r, "old").placeholder)   // old
+// ```
+pub struct LspRenameTarget
+    // The span the user is renaming, which the editor pre-selects.
+    range: lspbase.LspRange
+    // The text to put in the rename box.  Usually the current name,
+    // and not always: renaming a field written `self.x` offers `x`.
+    placeholder: Str
+
+// One semantic token, with absolute coordinates.
+//
+// NOT the wire form.  The wire form is a flat array of deltas, and
+// `encode_tokens` produces it from a sorted list of these.  A server
+// that built the deltas itself got the second one's base wrong.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${lspfeat.token(0, 4, 3, 1, 0).length}")      // 3
+// ```
+pub struct LspSemanticToken
+    // The zero-based line.
+    line: Int
+    // The start offset within the line, in the negotiated encoding.
+    start: Int
+    // How long the token is, in the same units.  A token may not span
+    // a line break: the specification requires each token to be on one
+    // line, and a server that emitted a multi-line token produces
+    // colours that slide.
+    length: Int
+    // An index into the legend's token types.
+    token_type: Int
+    // A bitset over the legend's modifiers: bit `n` is the `n`th
+    // modifier.
+    token_modifiers: Int
+
+// The names the token type and modifier indices refer to.
+//
+// Sent once, in the server's capabilities, and every token afterwards
+// is indices into it.  A client that never saw the legend cannot colour
+// anything, which is why it is a capability rather than part of each
+// response.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${list.len(lspfeat.legend(["function"], []).token_types)}")
+// ```
+pub struct LspSemanticLegend
+    // The token type names, in index order: `"function"`, `"type"`,
+    // `"variable"`.
+    token_types: [Str]
+    // The modifier names, in bit order: `"declaration"`, `"readonly"`,
+    // `"deprecated"`.
+    token_modifiers: [Str]
+
+// How a document should be formatted.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${lspfeat.formatting_options(4, true).tab_size}")   // 4
+// ```
+pub struct LspFormattingOptions
+    // How many spaces a tab stands for.
+    tab_size: Int
+    // Whether to indent with spaces rather than tabs.
+    insert_spaces: Bool
+    // Whether to trim trailing whitespace.
+    trim_trailing_whitespace: Bool
+    // Whether to end the file with a newline.
+    insert_final_newline: Bool
+
+// A document and a position.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     println("${lspfeat.doc_position("file:///a.nv", lspbase.position(1, 1)).position.line}")
+// ```
+pub fn doc_position(uri: Str, p: lspbase.LspPosition) -> LspDocPosition []
+    todo("lsp-nv.lspfeat.doc_position")
+
+// A completion item with a label, a kind and what it inserts.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     let r = lspbase.at(lspbase.position(0, 0))
+//     println(lspfeat.completion("x", LspKindVariable, r, "x").label)
+// ```
+pub fn completion(label: Str, kind: LspCompletionKind, r: lspbase.LspRange,
+                  insert: Str) -> LspCompletionItem []
+    todo("lsp-nv.lspfeat.completion")
+
+// A completion list.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${list.len(lspfeat.completion_list([], false).items)}")
+// ```
+pub fn completion_list(items: [LspCompletionItem], is_incomplete: Bool) -> LspCompletionList []
+    todo("lsp-nv.lspfeat.completion_list")
+
+// The number a completion kind has on the wire.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println(lspfeat.completion_kind_code(LspKindMethod))   // 2
+// ```
+pub fn completion_kind_code(k: LspCompletionKind) -> Int []
+    todo("lsp-nv.lspfeat.completion_kind_code")
+
+// The completion kind a wire number denotes, or `None` — including for
+// the seventeen the specification defines and this package does not
+// carry.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     match lspfeat.completion_kind_of(3)
+//         None    => println("not one this package carries")
+//         Some(_) => println("a function")
+// ```
+pub fn completion_kind_of(code: Int) -> ?LspCompletionKind []
+    todo("lsp-nv.lspfeat.completion_kind_of")
+
+// A hover.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     let m = lspbase.markup(LspPlainText, "Int")
+//     println(lspfeat.hover(m, lspbase.at(lspbase.position(0, 0))).contents.value)
+// ```
+pub fn hover(contents: lspbase.LspMarkupContent, r: lspbase.LspRange) -> LspHover []
+    todo("lsp-nv.lspfeat.hover")
+
+// A rename target.
+//
+// ```novo
+// use lspbase
+// use lspfeat
+//
+// fn main() [io]
+//     println(lspfeat.rename_target(lspbase.at(lspbase.position(0, 0)), "x").placeholder)
+// ```
+pub fn rename_target(r: lspbase.LspRange, placeholder: Str) -> LspRenameTarget []
+    todo("lsp-nv.lspfeat.rename_target")
+
+// A semantic token with absolute coordinates.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${lspfeat.token(2, 0, 5, 0, 0).line}")        // 2
+// ```
+pub fn token(line: Int, start: Int, length: Int, token_type: Int,
+             modifiers: Int) -> LspSemanticToken []
+    todo("lsp-nv.lspfeat.token")
+
+// A legend.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${list.len(lspfeat.legend([], []).token_modifiers)}")
+// ```
+pub fn legend(token_types: [Str], token_modifiers: [Str]) -> LspSemanticLegend []
+    todo("lsp-nv.lspfeat.legend")
+
+// Absolute tokens as the flat delta-encoded array the wire carries.
+//
+// THE ENCODING EVERY SERVER GETS WRONG ONCE.  Five integers per token:
+// the line delta from the previous token; the character delta, which is
+// from the previous token's START when they are on the same line and
+// from the LINE start when they are not; the length; the type index;
+// the modifier bitset.
+//
+// The input must be sorted by line and then by start.  This function
+// sorts it, because an unsorted array produces silently wrong colours
+// rather than an error, and a server that forgot to sort has a bug that
+// appears only in files whose declarations are out of order.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${list.len(lspfeat.encode_tokens([lspfeat.token(0, 0, 3, 0, 0)]))}")
+// ```
+pub fn encode_tokens(tokens: [LspSemanticToken]) -> [Int] []
+    todo("lsp-nv.lspfeat.encode_tokens")
+
+// The flat wire array back as absolute tokens.
+//
+// For a client, and for a server's own tests — asserting on a delta
+// array by eye is how a wrong base goes unnoticed.
+//
+// `None` when the array's length is not a multiple of five, which is
+// the only way it can be malformed.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     match lspfeat.decode_tokens([0, 0, 3, 0, 0])
+//         None     => println("not a token array")
+//         Some(ts) => println("${list.len(ts)}")            // 1
+// ```
+pub fn decode_tokens(data: [Int]) -> ?[LspSemanticToken] []
+    todo("lsp-nv.lspfeat.decode_tokens")
+
+// Formatting options.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println("${lspfeat.formatting_options(2, true).insert_spaces}")
+// ```
+pub fn formatting_options(tab_size: Int, insert_spaces: Bool) -> LspFormattingOptions []
+    todo("lsp-nv.lspfeat.formatting_options")
+
+// The single edit that replaces a whole document with formatted text.
+//
+// What a formatter answers, and the shape that avoids a whole class of
+// bug: a formatter returning many small edits has to get every range
+// right against the unformatted text, and one wrong range corrupts the
+// file.  One edit over the whole document cannot be wrong, at the cost
+// of losing the cursor position — which clients restore themselves.
+//
+// The `line_count` is the document's, because the edit's end must be
+// the position after its last line.
+//
+// ```novo
+// use lspfeat
+//
+// fn main() [io]
+//     println(lspfeat.whole_document_edit(3, "x\n").new_text)   // x
+// ```
+pub fn whole_document_edit(line_count: Int, formatted: Str) -> lspbase.LspTextEdit []
+    todo("lsp-nv.lspfeat.whole_document_edit")

@@ -1,0 +1,385 @@
+// lspmethod.nv — the bridge to jsonrpc-nv: a message off the wire
+// becomes one of this package's typed values, and back again.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THIS PACKAGE DOES NOT REIMPLEMENT JSON-RPC
+//
+// LSP's specification says the protocol "uses JSON-RPC" and then
+// defines a framing on top of it.  So a request here IS a
+// `jrpcmsg.JrpcRequest` — the same id rules, the same notification
+// rule, the same batch rules, the same `Content-Length` framing — and
+// what this package adds is the TYPE of its `params`.
+//
+// A second copy of any of that would be a second set of bugs, and the
+// one that would bite first is the id: LSP allows a server to send
+// requests to the CLIENT, so both ends hold a table of outstanding ids,
+// and the matching rule has to be the same rule at both ends.
+//
+// THE DECODE ANSWERS A METHOD, NOT A GUESS
+//
+// `LspRequest` and `LspNotification` have one arm per method this
+// package covers and one arm for everything else, carrying the method
+// name.  A server matches on them, and the `Unknown` arm is what it
+// answers `MethodNotFound` to — rather than a `None` that says nothing
+// about what was asked for.
+//
+// The methods this package does NOT cover are listed in the README, and
+// they arrive as `LspUnknownRequest`: a server that implements one of
+// them reads `params` itself and this package stays out of the way.
+
+use std.json
+use jrpcmsg
+use jrpcerr
+use lspbase
+use lspfeat
+use lspinit
+
+// A request this package types, or one it does not.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println(lspmethod.request_method(LspShutdownReq))     // shutdown
+// ```
+pub enum LspRequest
+    // `initialize`.  The first request; nothing may precede it.
+    LspInitializeReq
+    // `shutdown`.  A request, and it must be ANSWERED: a server that
+    // exited here loses the client's last messages.
+    LspShutdownReq
+    // `textDocument/completion`.
+    LspCompletionReq
+    // `textDocument/hover`.
+    LspHoverReq
+    // `textDocument/definition`.
+    LspDefinitionReq
+    // `textDocument/references`.
+    LspReferencesReq
+    // `textDocument/prepareRename`.
+    LspPrepareRenameReq
+    // `textDocument/rename`.
+    LspRenameReq
+    // `textDocument/formatting`.
+    LspFormattingReq
+    // `textDocument/rangeFormatting`.
+    LspRangeFormattingReq
+    // `textDocument/semanticTokens/full`.
+    LspSemanticTokensReq
+    // Anything else, carrying the method name so the server can answer
+    // `MethodNotFound` with it or handle it itself.
+    LspUnknownRequest(method: Str)
+
+// A notification this package types, or one it does not.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println(lspmethod.notification_method(LspExitNote))   // exit
+// ```
+pub enum LspNotification
+    // `initialized`.  Sent once, after the server answered
+    // `initialize`.
+    LspInitializedNote
+    // `exit`.  Ends the process; a server still running after one is a
+    // process the editor cannot kill.
+    LspExitNote
+    // `textDocument/didOpen`.  From here the client's copy is the
+    // truth and the file on disk is not.
+    LspDidOpenNote
+    // `textDocument/didChange`.
+    LspDidChangeNote
+    // `textDocument/didClose`.  From here the file on disk is the
+    // truth again.
+    LspDidCloseNote
+    // `textDocument/didSave`.
+    LspDidSaveNote
+    // `textDocument/publishDiagnostics`.  Server to client, and the
+    // only notification in this list that goes that way.
+    LspPublishDiagnosticsNote
+    // Anything else, carrying the method name.
+    LspUnknownNotification(method: Str)
+
+// The method name a request arm uses on the wire.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println(lspmethod.request_method(LspHoverReq))        // textDocument/hover
+// ```
+pub fn request_method(r: LspRequest) -> Str []
+    todo("lsp-nv.lspmethod.request_method")
+
+// The request arm a method name denotes.
+//
+// Total: a name this package does not cover answers
+// `LspUnknownRequest` carrying it, rather than an absence.  A server
+// answering `MethodNotFound` needs the name, and a server handling a
+// method this package does not type needs it too.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     match lspmethod.request_of("textDocument/codeAction")
+//         LspUnknownRequest(m) => println("not typed here: ${m}")
+//         _                    => println("typed")
+// ```
+pub fn request_of(method: Str) -> LspRequest []
+    todo("lsp-nv.lspmethod.request_of")
+
+// The method name a notification arm uses on the wire.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println(lspmethod.notification_method(LspDidOpenNote))
+// ```
+pub fn notification_method(n: LspNotification) -> Str []
+    todo("lsp-nv.lspmethod.notification_method")
+
+// The notification arm a method name denotes.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     match lspmethod.notification_of("exit")
+//         LspExitNote => println("exit")
+//         _           => println("something else")
+// ```
+pub fn notification_of(method: Str) -> LspNotification []
+    todo("lsp-nv.lspmethod.notification_of")
+
+// Whether the wire method is one this package types.
+//
+// False for the `Unknown` arms.  A server uses it to decide whether to
+// read `params` itself.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println("${lspmethod.is_typed_method("textDocument/hover")}")   // true
+//     println("${lspmethod.is_typed_method("textDocument/codeLens")}")
+// ```
+pub fn is_typed_method(method: Str) -> Bool []
+    todo("lsp-nv.lspmethod.is_typed_method")
+
+// Whether a method is a NOTIFICATION rather than a request.
+//
+// The distinction is the protocol's and it is not negotiable: a server
+// that answered `textDocument/didChange` has sent a response to a
+// message with no id, and a server that failed to answer
+// `textDocument/hover` leaves the client waiting for ever.  A
+// dispatcher checks this against what actually arrived — `jrpcmsg`'s
+// notification is the absence of the id — and refuses a mismatch
+// rather than guessing.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println("${lspmethod.is_notification_method("exit")}")          // true
+//     println("${lspmethod.is_notification_method("shutdown")}")      // false
+// ```
+pub fn is_notification_method(method: Str) -> Bool []
+    todo("lsp-nv.lspmethod.is_notification_method")
+
+// Whether what arrived agrees with what the method should be.
+//
+// True when a request method arrived with an id and a notification
+// method arrived without one.  The one check between a well-behaved
+// client and a server that hangs: `is_notification_method` says what
+// the protocol requires, and `jrpcmsg.is_notification` says what
+// turned up.
+//
+// ```novo
+// use jrpcmsg
+// use lspmethod
+//
+// fn main() [io]
+//     println("${lspmethod.shape_agrees(jrpcmsg.notification("exit", None))}")
+// ```
+pub fn shape_agrees(r: jrpcmsg.JrpcRequest) -> Bool []
+    todo("lsp-nv.lspmethod.shape_agrees")
+
+// The document and position five requests carry, out of a request's
+// `params`.
+//
+// `textDocument/completion`, `hover`, `definition`, `references`,
+// `prepareRename` and `rename` all take a `textDocument` and a
+// `position` and this reads both.  A `params` that is absent, is not an
+// object, or is missing either member answers `InvalidParams` — the
+// error the protocol requires for exactly this, and one a server would
+// otherwise construct at six call sites.
+//
+// ```novo
+// use jrpcmsg
+// use lspmethod
+//
+// fn main() [io]
+//     let q = jrpcmsg.call(JrpcIdInt(1), "textDocument/hover", None)
+//     match lspmethod.doc_position_params(q)
+//         Err(e)  => println("${e.code}")                   // -32602
+//         Ok(dp)  => println(dp.uri)
+// ```
+pub fn doc_position_params(r: jrpcmsg.JrpcRequest) -> Result<lspfeat.LspDocPosition, jrpcerr.JrpcError> []
+    todo("lsp-nv.lspmethod.doc_position_params")
+
+// The URI a request's `params` names in its `textDocument` member.
+//
+// For the requests that take a document and no position:
+// `textDocument/formatting`, `semanticTokens/full`, and the
+// notifications.
+//
+// ```novo
+// use jrpcmsg
+// use lspmethod
+//
+// fn main() [io]
+//     let q = jrpcmsg.call(JrpcIdInt(1), "textDocument/formatting", None)
+//     match lspmethod.document_uri_param(q)
+//         Err(e) => println("${e.code}")                    // -32602
+//         Ok(u)  => println(u)
+// ```
+pub fn document_uri_param(r: jrpcmsg.JrpcRequest) -> Result<Str, jrpcerr.JrpcError> []
+    todo("lsp-nv.lspmethod.document_uri_param")
+
+// A position read out of a JSON object's `line` and `character`
+// members.
+//
+// `InvalidParams` when either is absent or is not an integer.  The
+// specification requires both to be unsigned integers, and a client
+// sending a negative line is one whose messages a server should refuse
+// rather than clamp — a clamped position puts a diagnostic somewhere
+// the user did not ask about.
+//
+// ```novo
+// use std.json
+// use lspmethod
+//
+// fn main() [io]
+//     match json.parse("{\"line\":1,\"character\":2}")
+//         None    => println("not json")
+//         Some(v) =>
+//             match lspmethod.position_from_json(v)
+//                 Err(e) => println("${e.code}")
+//                 Ok(p)  => println("${p.line}")            // 1
+// ```
+pub fn position_from_json(v: JsonValueH) -> Result<lspbase.LspPosition, jrpcerr.JrpcError> []
+    todo("lsp-nv.lspmethod.position_from_json")
+
+// A position as the JSON object the wire carries.
+//
+// ```novo
+// use std.json
+// use lspbase
+// use lspmethod
+//
+// fn main() [io]
+//     println(json.stringify(lspmethod.position_to_json(lspbase.position(1, 2))))
+// ```
+pub fn position_to_json(p: lspbase.LspPosition) -> JsonValueH []
+    todo("lsp-nv.lspmethod.position_to_json")
+
+// A range read out of a JSON object's `start` and `end` members.
+//
+// ```novo
+// use std.json
+// use lspmethod
+//
+// fn main() [io]
+//     match json.parse("{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}}")
+//         None    => println("not json")
+//         Some(v) =>
+//             match lspmethod.range_from_json(v)
+//                 Err(e) => println("${e.code}")
+//                 Ok(r)  => println("${r.end.character}")   // 1
+// ```
+pub fn range_from_json(v: JsonValueH) -> Result<lspbase.LspRange, jrpcerr.JrpcError> []
+    todo("lsp-nv.lspmethod.range_from_json")
+
+// A range as the JSON object the wire carries.
+//
+// ```novo
+// use std.json
+// use lspbase
+// use lspmethod
+//
+// fn main() [io]
+//     let r = lspbase.at(lspbase.position(0, 0))
+//     println(json.stringify(lspmethod.range_to_json(r)))
+// ```
+pub fn range_to_json(r: lspbase.LspRange) -> JsonValueH []
+    todo("lsp-nv.lspmethod.range_to_json")
+
+// The error a server answers a request whose method it does not
+// implement.
+//
+// -32601 with the method name in `data`, which is `jrpcerr`'s own
+// `method_not_found` — named here so a server's dispatcher reaches for
+// one function rather than two packages.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println("${lspmethod.method_not_found("textDocument/codeLens").code}")
+// ```
+pub fn method_not_found(method: Str) -> jrpcerr.JrpcError []
+    todo("lsp-nv.lspmethod.method_not_found")
+
+// The error a server answers a request whose `params` are the wrong
+// shape.
+//
+// -32602, with the detail naming the member.
+//
+// ```novo
+// use lspmethod
+//
+// fn main() [io]
+//     println("${lspmethod.invalid_params("`position.line` must be an integer").code}")
+// ```
+pub fn invalid_params(detail: Str) -> jrpcerr.JrpcError []
+    todo("lsp-nv.lspmethod.invalid_params")
+
+// The error a server answers a request that arrived in the wrong
+// phase.
+//
+// -32002 before initialisation and -32600 after `shutdown`, which is
+// `lspinit.phase_error_code` wrapped in a message a client can show.
+//
+// ```novo
+// use lspinit
+// use lspmethod
+//
+// fn main() [io]
+//     println("${lspmethod.wrong_phase(LspBeforeInit).code}")   // -32002
+// ```
+pub fn wrong_phase(phase: lspinit.LspPhase) -> jrpcerr.JrpcError []
+    todo("lsp-nv.lspmethod.wrong_phase")
+
+// The content of a request's `params`, or `InvalidParams` when there is
+// none.
+//
+// The one step every typed decoder starts with, so a server handling a
+// method this package does not type reaches for the same function and
+// gets the same error for the same reason.
+//
+// ```novo
+// use jrpcmsg
+// use lspmethod
+//
+// fn main() [io]
+//     let q = jrpcmsg.call(JrpcIdInt(1), "initialize", None)
+//     match lspmethod.params_object(q)
+//         Err(e) => println("${e.code}")                    // -32602
+//         Ok(_)  => println("an object")
+// ```
+pub fn params_object(r: jrpcmsg.JrpcRequest) -> Result<JsonValueH, jrpcerr.JrpcError> []
+    todo("lsp-nv.lspmethod.params_object")

@@ -1,0 +1,49 @@
+[package]
+name        = "lsp-nv"
+version     = "0.0.1"
+description = "Language Server Protocol 3.17 as typed values over jsonrpc-nv: the position encoding negotiated rather than assumed, document synchronisation, diagnostics, completion, hover, definition, references, rename, formatting, semantic tokens and workspace edits, with every request and notification routed by name.  No transport.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A language server opens files, watches directories and talks
+# to a client over a pipe — and none of that is here.  This package is
+# the protocol's VALUES: a message decoded from parameters the caller
+# already has, and a result encoded into parameters the caller will
+# send.  Every public function's effect row is `[]`, and the server that
+# uses it (novols) is where the `[fs]` and the `[io]` live.
+layer       = "core"
+
+category    = "tooling"
+
+tags        = ["lsp", "language-server", "language-server-protocol", "editor", "tooling", "jsonrpc", "sans-io"]
+repository  = "https://github.com/novolang/lsp-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Language Server Protocol 3.17 as typed values"
+
+[dependencies]
+# jsonrpc-nv supplies the messages LSP travels in and the base
+# protocol's Content-Length framing.  LSP's own specification says it
+# "uses JSON-RPC" and then defines the framing on top of it, so every
+# request here is a `JrpcRequest` whose `params` this package types, and
+# every result a `JrpcResponse` whose `result` this package builds.  A
+# second copy of the id rules, the batch rules and the framing would be
+# a second set of bugs.  `core`, so the layer rule holds.
+#
+# A PATH dependency while both packages are being staged: nothing is on
+# the registry yet, and a path that resolves to a sibling directory is
+# the only thing that resolves at all.  The publish round rewrites it to
+# `^0.0.1` before the tarball is built, because a path dependency in a
+# tarball sends the consumer to a directory that does not exist.
+jsonrpc-nv = { path = "../jsonrpc-nv" }

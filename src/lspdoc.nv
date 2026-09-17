@@ -1,0 +1,271 @@
+// lspdoc.nv — which document, which version of it, and how the client
+// tells the server it changed.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE SERVER's COPY IS THE ONE THAT COUNTS
+//
+// Once a client sends `textDocument/didOpen`, the version in the editor
+// — not the one on disk — is the truth, and it stays the truth until
+// `didClose`.  A server that answered a completion request by reading
+// the file from disk answers against text the user changed four
+// keystrokes ago.  This package types the notifications that keep the
+// server's copy in step; holding the copy is the server's own job,
+// because it is the thing a server is.
+//
+// THE VERSION IS A FENCE, NOT A COUNTER
+//
+// Every `didChange` carries a version, and the client increases it on
+// every change including undo and redo — so it is monotonic but its
+// increments mean nothing.  What it is FOR is that a diagnostic or a
+// workspace edit can name the version it was computed against, and the
+// client discards one that is out of date.  A server that published
+// diagnostics without a version has published them against a document
+// that may already have moved on, and the user sees squiggles under the
+// wrong words.
+//
+// AN INCREMENTAL CHANGE's RANGE IS AGAINST THE PREVIOUS STATE
+//
+// A `didChange` may carry several changes, and each one's range is
+// against the document AS THE PREVIOUS CHANGES IN THE SAME
+// NOTIFICATION LEFT IT.  Applying them out of order, or computing all
+// their offsets against the original, corrupts the document — and the
+// corruption is silent, because the server's copy simply drifts from
+// the editor's until something looks impossible.  `LspContentChange`
+// keeps them a list for that reason, and the order is the semantics.
+
+use lspbase
+
+// Which document.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println(lspdoc.document_id("file:///a.nv").uri)
+// ```
+pub struct LspTextDocumentId
+    // The document's URI.  Opaque to this package: it is the client's
+    // identifier for the document and the server must send back
+    // exactly what it received, byte for byte, rather than a
+    // normalised form.
+    uri: Str
+
+// Which document, and which version of it.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println("${lspdoc.versioned_id("file:///a.nv", 4).version}")   // 4
+// ```
+pub struct LspVersionedId
+    // The document's URI.
+    uri: Str
+    // The version this refers to.  Monotonic, and its increments mean
+    // nothing: a client increases it on every change including undo.
+    version: Int
+
+// A document the client has opened.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println(lspdoc.text_document("file:///a.nv", "novo", 1, "").language_id)
+// ```
+pub struct LspTextDocument
+    // The document's URI.
+    uri: Str
+    // The language, as the client identifies it: `"novo"`, `"rust"`,
+    // `"markdown"`.  A server registered for several languages
+    // dispatches on this.
+    language_id: Str
+    // The version this content is.
+    version: Int
+    // The full text, as the editor has it — which from this moment is
+    // the truth, and not what is on disk.
+    text: Str
+
+// How a client will send changes.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println(lspdoc.sync_kind_code(LspSyncIncremental))    // 2
+// ```
+pub enum LspSyncKind
+    // The client sends no `didChange` at all.  A server that declared
+    // this is answering against the text it was given at `didOpen` and
+    // nothing else, which is right for a read-only viewer and wrong
+    // for anything else.
+    LspSyncNone
+    // Every change carries the whole document.  Simple, and correct;
+    // it costs a copy of the file on every keystroke.
+    LspSyncFull
+    // Every change carries only the ranges that changed.  What a
+    // server that can apply them should declare, and the one that
+    // needs the ordering rule this module's opening note describes.
+    LspSyncIncremental
+
+// One change in a `didChange` notification.
+//
+// ```novo
+// use lspbase
+// use lspdoc
+//
+// fn main() [io]
+//     println("${lspdoc.is_full_change(LspFullText("x"))}")   // true
+// ```
+pub enum LspContentChange
+    // The whole document is now this.  Sent under `LspSyncFull`, and
+    // legal under `LspSyncIncremental` too — a client may send one of
+    // these at any time to resynchronise.
+    LspFullText(text: Str)
+    // The span `range` is now `text`.  The range is against the
+    // document as the PREVIOUS changes in the same notification left
+    // it, which is why these are a list and why the order is the
+    // semantics.
+    LspRangeChange(range: lspbase.LspRange, text: Str)
+
+// A document identifier.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println(lspdoc.document_id("file:///a.nv").uri)
+// ```
+pub fn document_id(uri: Str) -> LspTextDocumentId []
+    todo("lsp-nv.lspdoc.document_id")
+
+// A versioned document identifier.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println("${lspdoc.versioned_id("file:///a.nv", 1).version}")
+// ```
+pub fn versioned_id(uri: Str, version: Int) -> LspVersionedId []
+    todo("lsp-nv.lspdoc.versioned_id")
+
+// An opened document.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println(lspdoc.text_document("file:///a.nv", "novo", 1, "let x = 1").text)
+// ```
+pub fn text_document(uri: Str, language_id: Str, version: Int, text: Str) -> LspTextDocument []
+    todo("lsp-nv.lspdoc.text_document")
+
+// The number the sync kind has on the wire: 0, 1 or 2.
+//
+// The specification numbers these rather than naming them, and a server
+// that guessed the numbering sends a capability the client reads as a
+// different kind.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println(lspdoc.sync_kind_code(LspSyncFull))           // 1
+// ```
+pub fn sync_kind_code(k: LspSyncKind) -> Int []
+    todo("lsp-nv.lspdoc.sync_kind_code")
+
+// The sync kind a wire number denotes, or `None`.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     match lspdoc.sync_kind_of(2)
+//         None    => println("not a sync kind")
+//         Some(_) => println("incremental")
+// ```
+pub fn sync_kind_of(code: Int) -> ?LspSyncKind []
+    todo("lsp-nv.lspdoc.sync_kind_of")
+
+// Whether a change replaces the whole document.
+//
+// A server applying changes checks this first: a full-text change
+// discards everything it had, and one may arrive under incremental sync
+// at any time.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println("${lspdoc.is_full_change(LspFullText(""))}")  // true
+// ```
+pub fn is_full_change(c: LspContentChange) -> Bool []
+    todo("lsp-nv.lspdoc.is_full_change")
+
+// A document's text with one change applied, in the given position
+// encoding.
+//
+// The encoding is a parameter because a change's range is in the
+// negotiated units, and converting it to a byte offset is the step a
+// server gets wrong — see `lspbase`'s opening note.
+//
+// `None` when the range does not exist in the text: a line past the
+// end, or a start after the end.  A server that got one of these has
+// drifted from the client and should ask for a full resynchronisation
+// rather than guess.
+//
+// ```novo
+// use lspbase
+// use lspdoc
+//
+// fn main() [io]
+//     match lspdoc.apply_change("abc", LspFullText("xyz"), LspUtf16)
+//         None    => println("out of range")
+//         Some(t) => println(t)                             // xyz
+// ```
+pub fn apply_change(text: Str, c: LspContentChange, e: lspbase.LspPositionEncoding) -> ?Str []
+    todo("lsp-nv.lspdoc.apply_change")
+
+// A document's text with a notification's changes applied, in order.
+//
+// IN ORDER, and that is the whole function.  Each change's range is
+// against the document as the previous ones left it, so applying them
+// in any other order — or computing every offset against the original
+// — corrupts the document silently.
+//
+// `None` when any change is out of range, and nothing is applied: the
+// caller still holds the text it passed in, and should ask the client
+// to resend the document.
+//
+// ```novo
+// use lspbase
+// use lspdoc
+//
+// fn main() [io]
+//     match lspdoc.apply_changes("abc", [LspFullText("xyz")], LspUtf16)
+//         None    => println("out of range")
+//         Some(t) => println(t)                             // xyz
+// ```
+pub fn apply_changes(text: Str, changes: [LspContentChange],
+                     e: lspbase.LspPositionEncoding) -> ?Str []
+    todo("lsp-nv.lspdoc.apply_changes")
+
+// Whether a version is newer than one the server already has.
+//
+// A strictly greater comparison, and it is a function rather than a
+// `>` because the interesting case is the equal one: a notification
+// carrying a version the server already holds is a duplicate, and a
+// server that reapplied it has applied the same edit twice.
+//
+// ```novo
+// use lspdoc
+//
+// fn main() [io]
+//     println("${lspdoc.is_newer(5, 4)}")                   // true
+//     println("${lspdoc.is_newer(4, 4)}")                   // false
+// ```
+pub fn is_newer(incoming: Int, held: Int) -> Bool []
+    todo("lsp-nv.lspdoc.is_newer")

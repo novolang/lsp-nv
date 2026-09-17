@@ -1,0 +1,417 @@
+// lspbase.nv — the types every other part of the protocol is built out
+// of, and the one rule about them that breaks programs.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A POSITION's `character` IS NOT A CHARACTER
+//
+// The Language Server Protocol's `Position` has a `line` and a
+// `character`, and `character` is an offset measured in UTF-16 CODE
+// UNITS — not bytes, not Unicode characters, not grapheme clusters.
+// That is the specification's historical default and it is the source
+// of the single most common bug in language servers: a server that
+// counted bytes puts every diagnostic on a line containing an accented
+// letter one column too far right, and a server that counted
+// characters is wrong for every emoji, which is two code units.
+//
+// Version 3.17 made it negotiable.  A client advertises the encodings
+// it supports in `general.positionEncoding`, the server picks one and
+// reports it in its capabilities, and from then on every position in
+// both directions is in THAT encoding.  A server that ignored the
+// negotiation and assumed UTF-16 is right today and wrong the day a
+// client offers UTF-8 first.
+//
+// So `LspPositionEncoding` is a value this package carries rather than
+// an assumption it makes, `lspinit.negotiate_encoding` is where it is
+// chosen, and the conversions between an encoding's offsets and a
+// byte offset in a line are here — because a server holding a file as
+// bytes needs them on every single request.
+//
+// A RANGE's END IS EXCLUSIVE, AND A LINE's END IS A REAL POSITION
+//
+// A range covers from `start` up to but not including `end`.  A range
+// whose start and end are equal is empty and names a cursor position,
+// which is a legal and common thing to send.  A position whose
+// `character` is the length of the line names the place after the last
+// character, which is where a diagnostic about a missing semicolon
+// goes.
+
+// How a `character` offset is measured.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println(lspbase.encoding_name(LspUtf16))              // utf-16
+// ```
+pub enum LspPositionEncoding
+    // UTF-16 code units.  The protocol's default and the only encoding
+    // a client is required to support, so a server that supports
+    // exactly one supports this one.
+    LspUtf16
+    // UTF-8 code units, which are bytes.  The cheapest for a server
+    // that holds files as bytes, and the one a client has to opt into.
+    LspUtf8
+    // Unicode code points.  Offered by the specification, supported by
+    // almost nothing, and listed here so a negotiation can name it.
+    LspUtf32
+
+// A place in a text document.
+//
+// Zero-based in both components.  `character` is an offset in the
+// NEGOTIATED encoding, and is not a character; see this module's
+// opening note.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.position(3, 0).line}")             // 3
+// ```
+pub struct LspPosition
+    // The zero-based line.
+    line: Int
+    // The zero-based offset within the line, in the negotiated
+    // position encoding.  A value equal to the line's length names the
+    // place after the last character, which is where a diagnostic
+    // about something missing goes.
+    character: Int
+
+// A span of a text document, from `start` up to but not including
+// `end`.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let r = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 4))
+//     println("${lspbase.is_empty_range(r)}")               // false
+// ```
+pub struct LspRange
+    // Where the span begins, inclusive.
+    start: LspPosition
+    // Where it ends, EXCLUSIVE.  Equal to `start` for an empty range,
+    // which names a cursor position and is a legal thing to send.
+    end: LspPosition
+
+// A range in a named document.
+//
+// What "go to definition" answers and what a reference list is made of.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let r = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 1))
+//     println(lspbase.location("file:///a.nv", r).uri)
+// ```
+pub struct LspLocation
+    // The document, as a URI.
+    uri: Str
+    // The span within it.
+    range: LspRange
+
+// A location with the wider range a user interface shows around it.
+//
+// The specification's `LocationLink`, and the reason it exists is a
+// "peek definition" window: `target_range` is the whole function so the
+// window shows it, `target_selection_range` is just the name so the
+// cursor lands on it, and `origin_selection_range` is what was under
+// the cursor so the editor can underline it.  A server that answered a
+// plain `Location` gives the editor one range and it has to guess the
+// other two.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let r = lspbase.range(lspbase.position(0, 0), lspbase.position(9, 0))
+//     println(lspbase.location_link("file:///a.nv", r, r).target_uri)
+// ```
+pub struct LspLocationLink
+    // What was under the cursor in the requesting document, or an
+    // empty range when the server does not want to say.
+    origin_selection_range: LspRange
+    // The document being pointed at.
+    target_uri: Str
+    // The whole of the thing being pointed at — the entire function,
+    // including its doc comment.
+    target_range: LspRange
+    // The part of it the cursor should land on: the name.  Must be
+    // contained in `target_range`.
+    target_selection_range: LspRange
+
+// A replacement of one span with one string.
+//
+// The unit every edit in the protocol is made of.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let r = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 3))
+//     println(lspbase.text_edit(r, "let").new_text)         // let
+// ```
+pub struct LspTextEdit
+    // The span to replace.  An empty range inserts.
+    range: LspRange
+    // What to put there.  The empty string deletes.
+    new_text: Str
+
+// How a string of documentation should be rendered.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println(lspbase.markup_kind_name(LspMarkdown))        // markdown
+// ```
+pub enum LspMarkupKind
+    // Render as plain text, escaping nothing.
+    LspPlainText
+    // Render as CommonMark.  A client says which kinds it supports,
+    // and a server that sent markdown to a client that asked for plain
+    // text shows a user the asterisks.
+    LspMarkdown
+
+// Documentation, and how to render it.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println(lspbase.markup(LspMarkdown, "**hi**").value)  // **hi**
+// ```
+pub struct LspMarkupContent
+    // How to render `value`.
+    kind: LspMarkupKind
+    // The text.
+    value: Str
+
+// A position.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.position(1, 2).character}")        // 2
+// ```
+pub fn position(line: Int, character: Int) -> LspPosition []
+    todo("lsp-nv.lspbase.position")
+
+// A range.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let r = lspbase.range(lspbase.position(0, 0), lspbase.position(1, 0))
+//     println("${r.end.line}")                              // 1
+// ```
+pub fn range(start: LspPosition, end: LspPosition) -> LspRange []
+    todo("lsp-nv.lspbase.range")
+
+// The empty range at a position: a cursor rather than a selection.
+//
+// A legal and common thing to send — an insertion is an edit over one
+// of these — and the case an implementation that validated
+// `start < end` refuses.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.is_empty_range(lspbase.at(lspbase.position(2, 5)))}")
+// ```
+pub fn at(p: LspPosition) -> LspRange []
+    todo("lsp-nv.lspbase.at")
+
+// A location.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let r = lspbase.at(lspbase.position(0, 0))
+//     println(lspbase.location("file:///a.nv", r).uri)
+// ```
+pub fn location(uri: Str, r: LspRange) -> LspLocation []
+    todo("lsp-nv.lspbase.location")
+
+// A location link, with the selection range inside the target range.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let whole = lspbase.range(lspbase.position(0, 0), lspbase.position(9, 0))
+//     let name = lspbase.range(lspbase.position(0, 3), lspbase.position(0, 7))
+//     println(lspbase.location_link("file:///a.nv", whole, name).target_uri)
+// ```
+pub fn location_link(uri: Str, target: LspRange, selection: LspRange) -> LspLocationLink []
+    todo("lsp-nv.lspbase.location_link")
+
+// A text edit.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println(lspbase.text_edit(lspbase.at(lspbase.position(0, 0)), "x").new_text)
+// ```
+pub fn text_edit(r: LspRange, new_text: Str) -> LspTextEdit []
+    todo("lsp-nv.lspbase.text_edit")
+
+// Markup.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println(lspbase.markup(LspPlainText, "hi").value)     // hi
+// ```
+pub fn markup(kind: LspMarkupKind, value: Str) -> LspMarkupContent []
+    todo("lsp-nv.lspbase.markup")
+
+// Whether a range covers nothing: its start and end are the same
+// position.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.is_empty_range(lspbase.at(lspbase.position(0, 0)))}")
+// ```
+pub fn is_empty_range(r: LspRange) -> Bool []
+    todo("lsp-nv.lspbase.is_empty_range")
+
+// Whether a position is inside a range: at or after the start, and
+// strictly before the end.
+//
+// The end being exclusive is the whole of this function's content, and
+// is what a server gets wrong when it decides which diagnostic the
+// cursor is on.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let r = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 4))
+//     println("${lspbase.contains(r, lspbase.position(0, 4))}")   // false
+// ```
+pub fn contains(r: LspRange, p: LspPosition) -> Bool []
+    todo("lsp-nv.lspbase.contains")
+
+// Whether two ranges share any position.
+//
+// Two ranges that merely touch — one ends where the other begins — do
+// NOT overlap, because the end is exclusive.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     let a = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 2))
+//     let b = lspbase.range(lspbase.position(0, 2), lspbase.position(0, 4))
+//     println("${lspbase.overlaps(a, b)}")                  // false
+// ```
+pub fn overlaps(a: LspRange, b: LspRange) -> Bool []
+    todo("lsp-nv.lspbase.overlaps")
+
+// How two positions compare: negative, zero or positive, by line and
+// then by character.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.compare(lspbase.position(0, 1), lspbase.position(1, 0))}")
+// ```
+pub fn compare(a: LspPosition, b: LspPosition) -> Int []
+    todo("lsp-nv.lspbase.compare")
+
+// The encoding's name as it appears on the wire: `"utf-16"`,
+// `"utf-8"`, `"utf-32"`.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println(lspbase.encoding_name(LspUtf8))               // utf-8
+// ```
+pub fn encoding_name(e: LspPositionEncoding) -> Str []
+    todo("lsp-nv.lspbase.encoding_name")
+
+// The encoding a wire name denotes, or `None`.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     match lspbase.encoding_named("utf-16")
+//         None    => println("unknown")
+//         Some(_) => println("known")
+// ```
+pub fn encoding_named(name: Str) -> ?LspPositionEncoding []
+    todo("lsp-nv.lspbase.encoding_named")
+
+// The byte offset in a line that a `character` offset names, given the
+// encoding.
+//
+// THE FUNCTION A SERVER CALLS ON EVERY REQUEST.  A server holding a
+// file as bytes gets positions from the client in code units of the
+// negotiated encoding, and every one of them has to become a byte
+// offset before it means anything.  A server that skipped this step is
+// correct on ASCII and wrong on every line with an accent in it.
+//
+// An offset past the end of the line answers the line's byte length,
+// which is what the specification says to do: a client may send a
+// position past the end and the server clamps rather than refusing.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.byte_offset("let x = 1", 4, LspUtf16)}")   // 4
+// ```
+pub fn byte_offset(line: Str, character: Int, e: LspPositionEncoding) -> Int []
+    todo("lsp-nv.lspbase.byte_offset")
+
+// The `character` offset in the given encoding that a byte offset in a
+// line names.
+//
+// The other direction, which a server needs on every diagnostic and
+// every completion range it produces.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.character_offset("let x = 1", 4, LspUtf16)}")   // 4
+// ```
+pub fn character_offset(line: Str, byte_offset: Int, e: LspPositionEncoding) -> Int []
+    todo("lsp-nv.lspbase.character_offset")
+
+// How long a line is in the given encoding's units.
+//
+// The value a position naming the end of the line carries.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println("${lspbase.line_length("abc", LspUtf16)}")    // 3
+// ```
+pub fn line_length(line: Str, e: LspPositionEncoding) -> Int []
+    todo("lsp-nv.lspbase.line_length")
+
+// The markup kind's wire name: `"plaintext"` or `"markdown"`.
+//
+// ```novo
+// use lspbase
+//
+// fn main() [io]
+//     println(lspbase.markup_kind_name(LspPlainText))       // plaintext
+// ```
+pub fn markup_kind_name(k: LspMarkupKind) -> Str []
+    todo("lsp-nv.lspbase.markup_kind_name")

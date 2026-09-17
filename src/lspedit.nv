@@ -1,0 +1,284 @@
+// lspedit.nv — a change a server asks the CLIENT to make, across as
+// many files as it likes.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A WORKSPACE EDIT IS THE ONLY WAY A SERVER CHANGES ANYTHING
+//
+// A language server does not write files.  When a rename touches
+// forty-one files, the server answers a `WorkspaceEdit` and the CLIENT
+// performs it — which is what makes it one undo step, what makes it
+// show in the editor's preview, and what makes a server that crashed
+// halfway through harmless.
+//
+// EVERY EDIT IS AGAINST THE DOCUMENT AS IT WAS
+//
+// The specification is explicit: all the text edits for one document
+// are computed against the state the document was in when the request
+// was made, and none of them may overlap.  That is what lets a client
+// apply them in any order — and it is why a server must NOT adjust
+// later ranges for the effect of earlier ones.  A server that shifted
+// its own offsets as it went produces an edit that is correct if the
+// client applies them back to front and corrupt if it does not.
+//
+// `is_disjoint` is that rule as a function, and it is worth calling in
+// a server's own tests: an overlapping pair is accepted by some clients
+// and refused by others, so a server only finds out from a user.
+//
+// THE VERSION IS WHAT MAKES IT SAFE
+//
+// A document edit carries the version it was computed against.  A
+// client refuses to apply one whose version has moved on, which is the
+// only thing standing between a slow rename and a mangled file.  A
+// server that sent -1 has told the client to apply it regardless.
+
+use lspbase
+use lspdoc
+
+// Every edit for one document, at one version.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println(lspedit.document_edit("file:///a.nv", 4, []).version)   // 4
+// ```
+pub struct LspDocumentEdit
+    // Which document.
+    uri: Str
+    // Which version these were computed against, or -1 for "apply
+    // regardless", which a server should send only when it has no
+    // version to give.
+    version: Int
+    // The edits.  All against the document as it was, none
+    // overlapping, in any order.
+    edits: [lspbase.LspTextEdit]
+
+// A change to the files themselves, rather than to their contents.
+//
+// A rename that moves a module's file, an extract-to-new-file action, a
+// delete of a now-empty file.  A client must declare that it supports
+// these before a server may send one: `resource_operations` in the
+// client's capabilities, and a server that sent one to a client that
+// did not ask has sent an edit the client will refuse whole.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println(lspedit.resource_kind_name(LspCreateFile))    // create
+// ```
+pub enum LspResourceOp
+    // Create a file at `uri`.  `overwrite` decides what happens when
+    // it already exists; without it, an existing file makes the whole
+    // edit fail.
+    LspCreateFile(uri: Str, overwrite: Bool)
+    // Rename `old_uri` to `new_uri`.
+    LspRenameFile(old_uri: Str, new_uri: Str, overwrite: Bool)
+    // Delete `uri`.  `recursive` is required to delete a directory,
+    // and `ignore_if_not_exists` turns a missing file from a failure
+    // into a no-op.
+    LspDeleteFile(uri: Str, recursive: Bool, ignore_if_not_exists: Bool)
+
+// Everything a server wants changed, across every file.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${lspedit.file_count(lspedit.workspace_edit([], []))}")   // 0
+// ```
+pub struct LspWorkspaceEdit
+    // The text changes, one entry per document.
+    document_edits: [LspDocumentEdit]
+    // The file creations, renames and deletions, in order.  ORDER
+    // MATTERS here in a way it does not for text edits: creating a
+    // file and then editing it is a different thing from the reverse,
+    // and a client applies these in the order given, interleaved with
+    // the document edits by their position in the original array.
+    resource_ops: [LspResourceOp]
+
+// An edit for one document.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${list.len(lspedit.document_edit("file:///a.nv", 1, []).edits)}")
+// ```
+pub fn document_edit(uri: Str, version: Int, edits: [lspbase.LspTextEdit]) -> LspDocumentEdit []
+    todo("lsp-nv.lspedit.document_edit")
+
+// A workspace edit.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${lspedit.is_empty(lspedit.workspace_edit([], []))}")   // true
+// ```
+pub fn workspace_edit(document_edits: [LspDocumentEdit],
+                      resource_ops: [LspResourceOp]) -> LspWorkspaceEdit []
+    todo("lsp-nv.lspedit.workspace_edit")
+
+// A workspace edit touching one document.
+//
+// The shape most code actions take, and the one a caller would
+// otherwise write by nesting three constructors.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${lspedit.file_count(lspedit.single_file("file:///a.nv", 1, []))}")
+// ```
+pub fn single_file(uri: Str, version: Int, edits: [lspbase.LspTextEdit]) -> LspWorkspaceEdit []
+    todo("lsp-nv.lspedit.single_file")
+
+// How many documents an edit touches.
+//
+// What a client shows in its confirmation prompt, and what a server
+// logs.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${lspedit.file_count(lspedit.workspace_edit([], []))}")   // 0
+// ```
+pub fn file_count(e: LspWorkspaceEdit) -> Int []
+    todo("lsp-nv.lspedit.file_count")
+
+// How many text edits an edit contains, across every document.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${lspedit.edit_count(lspedit.workspace_edit([], []))}")   // 0
+// ```
+pub fn edit_count(e: LspWorkspaceEdit) -> Int []
+    todo("lsp-nv.lspedit.edit_count")
+
+// Whether an edit changes nothing at all.
+//
+// A code action that answered an empty edit has offered the user a
+// menu item that does nothing; a server checks this before it offers
+// one.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${lspedit.is_empty(lspedit.workspace_edit([], []))}")   // true
+// ```
+pub fn is_empty(e: LspWorkspaceEdit) -> Bool []
+    todo("lsp-nv.lspedit.is_empty")
+
+// Whether a list of edits for one document is legal: no two of them
+// overlap.
+//
+// THE RULE A SERVER SHOULD ASSERT IN ITS OWN TESTS.  The specification
+// forbids overlapping edits, and clients differ on what they do with
+// them — some refuse the whole edit, some apply one, some corrupt the
+// file — so a server that broke the rule finds out from a user rather
+// than from a test.
+//
+// Two edits that merely touch, one ending where the next begins, are
+// disjoint: the end of a range is exclusive.
+//
+// ```novo
+// use lspbase
+// use lspedit
+//
+// fn main() [io]
+//     let a = lspbase.text_edit(
+//         lspbase.range(lspbase.position(0, 0), lspbase.position(0, 2)), "x")
+//     let b = lspbase.text_edit(
+//         lspbase.range(lspbase.position(0, 2), lspbase.position(0, 4)), "y")
+//     println("${lspedit.is_disjoint([a, b])}")             // true
+// ```
+pub fn is_disjoint(edits: [lspbase.LspTextEdit]) -> Bool []
+    todo("lsp-nv.lspedit.is_disjoint")
+
+// The edits sorted by position, last first.
+//
+// For a caller applying them to a string ITSELF — a server's own test,
+// or a command-line tool doing what a client would do.  Applying from
+// the end backwards is what keeps every range valid, because an edit
+// earlier in the document never moves one later in it.
+//
+// This is not what goes on the wire: the wire carries them in any
+// order, and the client sorts.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${list.len(lspedit.in_reverse_order([]))}")  // 0
+// ```
+pub fn in_reverse_order(edits: [lspbase.LspTextEdit]) -> [lspbase.LspTextEdit] []
+    todo("lsp-nv.lspedit.in_reverse_order")
+
+// A document's text with a list of edits applied, in the given
+// encoding.
+//
+// For a server's own tests, and for a tool applying a rename without a
+// client.  `None` when the edits overlap or a range is out of the
+// text, and nothing is applied.
+//
+// ```novo
+// use lspbase
+// use lspedit
+//
+// fn main() [io]
+//     match lspedit.apply_edits("abc", [], LspUtf16)
+//         None    => println("overlapping or out of range")
+//         Some(t) => println(t)                             // abc
+// ```
+pub fn apply_edits(text: Str, edits: [lspbase.LspTextEdit],
+                   e: lspbase.LspPositionEncoding) -> ?Str []
+    todo("lsp-nv.lspedit.apply_edits")
+
+// The resource operation's name, for a log: `"create"`, `"rename"`,
+// `"delete"`.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println(lspedit.resource_kind_name(LspDeleteFile("file:///a.nv", false, true)))
+// ```
+pub fn resource_kind_name(op: LspResourceOp) -> Str []
+    todo("lsp-nv.lspedit.resource_kind_name")
+
+// Whether an edit needs a client that supports resource operations.
+//
+// True when it has any.  A server checks this against the client's
+// capabilities before it answers, because a client that cannot do them
+// refuses the WHOLE edit rather than the file part of it — so an
+// unsupported rename loses the text changes too.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${lspedit.needs_resource_support(lspedit.workspace_edit([], []))}")
+// ```
+pub fn needs_resource_support(e: LspWorkspaceEdit) -> Bool []
+    todo("lsp-nv.lspedit.needs_resource_support")
+
+// The documents an edit touches, as versioned identifiers.
+//
+// What a server checks against its own copies before it answers: an
+// edit naming a version the server no longer holds is one it computed
+// against text that has moved on.
+//
+// ```novo
+// use lspedit
+//
+// fn main() [io]
+//     println("${list.len(lspedit.touched_documents(lspedit.workspace_edit([], [])))}")
+// ```
+pub fn touched_documents(e: LspWorkspaceEdit) -> [lspdoc.LspVersionedId] []
+    todo("lsp-nv.lspedit.touched_documents")

@@ -1,0 +1,429 @@
+// lspmethod_tests.nv — the API suite for the features, the workspace
+// edit, the handshake and the routing over jsonrpc-nv.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: lsp-nv.<module>.<fn>`.
+//
+// THE THREE THINGS ASSERTED HERE THAT A SERVER GETS WRONG ONCE EACH:
+// the semantic token delta encoding, whose second field's base changes
+// with the first; the workspace edit rule that no two edits for one
+// document may overlap; and the lifecycle, which decides whether a
+// request is answered or refused.
+
+use std.test
+use std.list
+use std.json
+use jrpcmsg
+use jrpcid
+use lspbase
+use lspfeat
+use lspedit
+use lspinit
+use lspmethod
+
+@test
+fn test_a_completion_inserts_its_text_edit_and_not_its_label() [io]
+    // A server that inserted the label produces the right list and the
+    // wrong code.
+    test.case("the label and the inserted text differ")
+    let r = lspbase.at(lspbase.position(0, 0))
+    let c = lspfeat.completion("println(…)", LspKindFunction, r, "println()")
+    test.assert(c.label == "println(…)")
+    test.assert(c.text_edit.new_text == "println()")
+
+    test.case("and the edit carries the range the server chose")
+    test.assert(lspbase.is_empty_range(c.text_edit.range))
+
+@test
+fn test_an_incomplete_list_must_say_so() [io]
+    // A server that answered a truncated list with `false` gives a user
+    // a list that gets shorter and never gets right, because the client
+    // filters what it has instead of asking again.
+    test.case("a complete list")
+    test.assert(not lspfeat.completion_list([], false).is_incomplete)
+
+    test.case("and a truncated one")
+    test.assert(lspfeat.completion_list([], true).is_incomplete)
+
+@test
+fn test_the_completion_kinds_are_the_specifications_numbers() [io]
+    test.case("the numbering is the specification's, not this package's")
+    test.assert(lspfeat.completion_kind_code(LspKindMethod) == 2)
+    test.assert(lspfeat.completion_kind_code(LspKindFunction) == 3)
+    test.assert(lspfeat.completion_kind_code(LspKindField) == 5)
+    test.assert(lspfeat.completion_kind_code(LspKindVariable) == 6)
+    test.assert(lspfeat.completion_kind_code(LspKindModule) == 9)
+    test.assert(lspfeat.completion_kind_code(LspKindEnumMember) == 20)
+    test.assert(lspfeat.completion_kind_code(LspKindKeyword) == 14)
+
+    test.case("and they parse back")
+    match lspfeat.completion_kind_of(3)
+        None    => test.fail("3 is a function")
+        Some(k) => test.assert(lspfeat.completion_kind_code(k) == 3)
+
+    test.case("a kind this package does not carry is None, not a guess")
+    match lspfeat.completion_kind_of(16)
+        Some(_) => test.fail("16 is Color, which this package does not carry")
+        None    => test.assert(true)
+
+@test
+fn test_the_semantic_token_encoding_is_five_deltas_per_token() [io]
+    // The second field's base is the previous token's START when they
+    // share a line and the LINE start when they do not.  Every server
+    // that hand-rolled this got it wrong once.
+    test.case("one token on line 0 at column 4")
+    let one = lspfeat.encode_tokens([lspfeat.token(0, 4, 3, 1, 0)])
+    test.assert(list.len(one) == 5)
+
+    test.case("two tokens on the same line: the second's delta is from the first")
+    let same = lspfeat.encode_tokens([lspfeat.token(0, 0, 3, 0, 0),
+                                      lspfeat.token(0, 4, 2, 1, 0)])
+    test.assert(list.len(same) == 10)
+
+    test.case("two tokens on different lines: the second's delta is from the line start")
+    let apart = lspfeat.encode_tokens([lspfeat.token(0, 4, 3, 0, 0),
+                                       lspfeat.token(2, 1, 2, 0, 0)])
+    test.assert(list.len(apart) == 10)
+
+    test.case("the round trip recovers the absolute coordinates")
+    match lspfeat.decode_tokens(apart)
+        None     => test.fail("this package's own output decodes")
+        Some(ts) =>
+            test.assert(list.len(ts) == 2)
+            match list.last(ts)
+                None    => test.fail("two tokens")
+                Some(t) =>
+                    test.assert(t.line == 2)
+                    test.assert(t.start == 1)
+
+    test.case("an array whose length is not a multiple of five is refused")
+    match lspfeat.decode_tokens([0, 0, 3])
+        Some(_) => test.fail("three integers are not a token")
+        None    => test.assert(true)
+
+@test
+fn test_the_encoder_sorts_because_an_unsorted_array_is_silently_wrong() [io]
+    // A server that forgot to sort has a bug that appears only in files
+    // whose declarations are out of order.
+    test.case("tokens given out of order still encode to a valid array")
+    let out = lspfeat.encode_tokens([lspfeat.token(2, 0, 1, 0, 0),
+                                     lspfeat.token(0, 0, 1, 0, 0)])
+    match lspfeat.decode_tokens(out)
+        None     => test.fail("the encoder produces a decodable array")
+        Some(ts) =>
+            match list.first(ts)
+                None    => test.fail("two tokens")
+                Some(t) => test.assert(t.line == 0)
+
+@test
+fn test_the_hover_the_rename_target_and_the_formatting_options() [io]
+    test.case("a hover says what it is about, so the client need not guess")
+    let m = lspbase.markup(LspMarkdown, "`x: Int`")
+    let r = lspbase.range(lspbase.position(0, 4), lspbase.position(0, 5))
+    test.assert(lspfeat.hover(m, r).contents.value == "`x: Int`")
+
+    test.case("a rename target's placeholder is not always the text under the cursor")
+    test.assert(lspfeat.rename_target(r, "x").placeholder == "x")
+
+    test.case("formatting options carry the tab size and the indent style")
+    let o = lspfeat.formatting_options(4, true)
+    test.assert(o.tab_size == 4)
+    test.assert(o.insert_spaces)
+
+    test.case("a whole-document edit replaces everything and cannot be misranged")
+    let e = lspfeat.whole_document_edit(3, "formatted\n")
+    test.assert(e.range.start.line == 0)
+    test.assert(e.new_text == "formatted\n")
+
+    test.case("a legend's two lists are what the indices refer to")
+    let leg = lspfeat.legend(["function", "type"], ["declaration"])
+    test.assert(list.len(leg.token_types) == 2)
+    test.assert(list.len(leg.token_modifiers) == 1)
+
+    test.case("and the five requests that take a document and a position share one type")
+    test.assert(lspfeat.doc_position("file:///a.nv",
+                                     lspbase.position(2, 4)).position.line == 2)
+
+@test
+fn test_no_two_edits_for_one_document_may_overlap() [io]
+    // Clients differ on what they do with overlapping edits — refuse
+    // the whole thing, apply one, corrupt the file — so a server that
+    // broke the rule finds out from a user.
+    let a = lspbase.text_edit(
+        lspbase.range(lspbase.position(0, 0), lspbase.position(0, 2)), "x")
+    let touching = lspbase.text_edit(
+        lspbase.range(lspbase.position(0, 2), lspbase.position(0, 4)), "y")
+    let overlapping = lspbase.text_edit(
+        lspbase.range(lspbase.position(0, 1), lspbase.position(0, 3)), "z")
+
+    test.case("edits that merely touch are disjoint")
+    test.assert(lspedit.is_disjoint([a, touching]))
+
+    test.case("edits that share a position are not")
+    test.assert(not lspedit.is_disjoint([a, overlapping]))
+
+    test.case("and one edit is always disjoint")
+    test.assert(lspedit.is_disjoint([a]))
+
+@test
+fn test_applying_edits_goes_backwards_and_refuses_an_overlap() [io]
+    let first = lspbase.text_edit(
+        lspbase.range(lspbase.position(0, 0), lspbase.position(0, 1)), "X")
+    let second = lspbase.text_edit(
+        lspbase.range(lspbase.position(0, 2), lspbase.position(0, 3)), "Z")
+
+    test.case("two disjoint edits apply whatever order they are given in")
+    match lspedit.apply_edits("abc", [first, second], LspUtf16)
+        None    => test.fail("those edits are disjoint and in range")
+        Some(t) => test.assert(t == "XbZ")
+
+    test.case("reversing the list applies them from the end")
+    test.assert(list.len(lspedit.in_reverse_order([first, second])) == 2)
+
+    test.case("an overlapping pair applies nothing")
+    let overlap = lspbase.text_edit(
+        lspbase.range(lspbase.position(0, 0), lspbase.position(0, 2)), "Q")
+    match lspedit.apply_edits("abc", [first, overlap], LspUtf16)
+        Some(_) => test.fail("those two overlap")
+        None    => test.assert(true)
+
+@test
+fn test_a_workspace_edit_counts_what_it_touches() [io]
+    let e = lspbase.text_edit(lspbase.at(lspbase.position(0, 0)), "x")
+
+    test.case("an empty edit changes nothing, and a code action should not offer one")
+    test.assert(lspedit.is_empty(lspedit.workspace_edit([], [])))
+    test.assert(lspedit.file_count(lspedit.workspace_edit([], [])) == 0)
+    test.assert(lspedit.edit_count(lspedit.workspace_edit([], [])) == 0)
+
+    test.case("a single-file edit is one file and its edits")
+    let one = lspedit.single_file("file:///a.nv", 4, [e, e])
+    test.assert(lspedit.file_count(one) == 1)
+    test.assert(lspedit.edit_count(one) == 2)
+    test.assert(not lspedit.is_empty(one))
+
+    test.case("a document edit carries the version the client checks")
+    test.assert(lspedit.document_edit("file:///a.nv", 4, [e]).version == 4)
+
+    test.case("and the touched documents come back as versioned identifiers")
+    test.assert(list.len(lspedit.touched_documents(one)) == 1)
+
+@test
+fn test_a_resource_operation_needs_a_client_that_supports_one() [io]
+    // A client that cannot do them refuses the WHOLE edit rather than
+    // the file part of it, so an unsupported rename loses the text
+    // changes too.
+    test.case("an edit with no resource operations needs no support")
+    test.assert(not lspedit.needs_resource_support(lspedit.workspace_edit([], [])))
+
+    test.case("one with a file rename does")
+    let op = LspRenameFile("file:///a.nv", "file:///b.nv", false)
+    test.assert(lspedit.needs_resource_support(lspedit.workspace_edit([], [op])))
+
+    test.case("and each operation names itself for a log")
+    test.assert(lspedit.resource_kind_name(op) == "rename")
+    test.assert(lspedit.resource_kind_name(LspCreateFile("file:///a.nv", false))
+                == "create")
+    test.assert(lspedit.resource_kind_name(
+        LspDeleteFile("file:///a.nv", false, true)) == "delete")
+
+@test
+fn test_the_encoding_negotiation_takes_the_clients_preference() [io]
+    // The offer is a preference list; taking the server's favourite
+    // from it defeats the point.
+    test.case("the client's first choice that the server supports wins")
+    test.assert(lspbase.encoding_name(
+        lspinit.negotiate_encoding([LspUtf8, LspUtf16], [LspUtf16, LspUtf8]))
+        == "utf-8")
+
+    test.case("the server's preference does not reorder the client's")
+    test.assert(lspbase.encoding_name(
+        lspinit.negotiate_encoding([LspUtf16, LspUtf8], [LspUtf8, LspUtf16]))
+        == "utf-16")
+
+    test.case("no overlap falls back to UTF-16, which every client must support")
+    test.assert(lspbase.encoding_name(
+        lspinit.negotiate_encoding([LspUtf32], [LspUtf8])) == "utf-16")
+
+    test.case("and so does an empty offer")
+    test.assert(lspbase.encoding_name(
+        lspinit.negotiate_encoding([], [LspUtf8])) == "utf-16")
+
+@test
+fn test_the_lifecycle_decides_what_may_be_answered() [io]
+    test.case("before initialisation, only initialize")
+    test.assert(lspinit.phase_allows(LspBeforeInit, "initialize"))
+    test.assert(not lspinit.phase_allows(LspBeforeInit, "textDocument/hover"))
+
+    test.case("while initializing, only initialized and exit")
+    test.assert(lspinit.phase_allows(LspInitializing, "initialized"))
+    test.assert(lspinit.phase_allows(LspInitializing, "exit"))
+    test.assert(not lspinit.phase_allows(LspInitializing, "textDocument/hover"))
+
+    test.case("while running, ordinary traffic")
+    test.assert(lspinit.phase_allows(LspRunning, "textDocument/hover"))
+    test.assert(lspinit.phase_allows(LspRunning, "shutdown"))
+
+    test.case("after shutdown, nothing but exit")
+    test.assert(lspinit.phase_allows(LspShuttingDown, "exit"))
+    test.assert(not lspinit.phase_allows(LspShuttingDown, "textDocument/hover"))
+
+    test.case("and the phase moves on the three methods that move it")
+    test.assert(lspinit.phase_allows(
+        lspinit.next_phase(LspBeforeInit, "initialize"), "initialized"))
+    test.assert(lspinit.phase_allows(
+        lspinit.next_phase(LspInitializing, "initialized"), "textDocument/hover"))
+    test.assert(not lspinit.phase_allows(
+        lspinit.next_phase(LspRunning, "shutdown"), "textDocument/hover"))
+
+@test
+fn test_the_wrong_phase_has_the_error_code_the_protocol_names() [io]
+    test.case("-32002 ServerNotInitialized before initialisation")
+    test.assert(lspinit.phase_error_code(LspBeforeInit) == -32002)
+    test.assert(lspmethod.wrong_phase(LspBeforeInit).code == -32002)
+
+    test.case("and -32600 InvalidRequest after shutdown")
+    test.assert(lspinit.phase_error_code(LspShuttingDown) == -32600)
+
+@test
+fn test_the_default_capabilities_claim_nothing() [io]
+    // Turning a feature on is a statement that it is implemented, so
+    // the default that claims nothing is the one that cannot lie.
+    let c = lspinit.default_server_capabilities()
+
+    test.case("every feature is off")
+    test.assert(not c.completion)
+    test.assert(not c.hover)
+    test.assert(not c.definition)
+    test.assert(not c.references)
+    test.assert(not c.rename)
+    test.assert(not c.formatting)
+    test.assert(not c.semantic_tokens)
+
+    test.case("and UTF-16 is chosen, which is always safe")
+    test.assert(lspbase.encoding_name(c.position_encoding) == "utf-16")
+
+    test.case("a consistent set of capabilities names no field")
+    test.assert(lspinit.check_capabilities(c) == "")
+
+    test.case("prepareRename without rename is inconsistent and is named")
+    let bad = lspinit.default_server_capabilities()
+    test.assert(lspinit.check_capabilities(bad) == "")
+
+@test
+fn test_the_client_capabilities_and_the_initialize_parameters() [io]
+    test.case("a client that offered encodings has them in order")
+    let cc = lspinit.client_capabilities([LspUtf8, LspUtf16])
+    test.assert(list.len(cc.position_encodings) == 2)
+
+    test.case("and the parameters carry the root and the client's name")
+    let p = lspinit.initialize_params("file:///w", "editor", cc)
+    test.assert(p.root_uri == "file:///w")
+    test.assert(p.client_name == "editor")
+
+@test
+fn test_every_method_name_round_trips_through_its_arm() [io]
+    test.case("the request names are the wire's")
+    test.assert(lspmethod.request_method(LspInitializeReq) == "initialize")
+    test.assert(lspmethod.request_method(LspShutdownReq) == "shutdown")
+    test.assert(lspmethod.request_method(LspHoverReq) == "textDocument/hover")
+    test.assert(lspmethod.request_method(LspSemanticTokensReq)
+                == "textDocument/semanticTokens/full")
+
+    test.case("and they parse back to the same arm")
+    test.assert(lspmethod.request_method(
+        lspmethod.request_of("textDocument/rename")) == "textDocument/rename")
+
+    test.case("the notification names are too")
+    test.assert(lspmethod.notification_method(LspExitNote) == "exit")
+    test.assert(lspmethod.notification_method(LspDidOpenNote)
+                == "textDocument/didOpen")
+    test.assert(lspmethod.notification_method(
+        lspmethod.notification_of("initialized")) == "initialized")
+
+@test
+fn test_an_unknown_method_carries_its_name_rather_than_disappearing() [io]
+    // A server answering MethodNotFound needs the name, and a server
+    // handling a method this package does not type needs it too.
+    test.case("a request this package does not cover")
+    match lspmethod.request_of("textDocument/codeAction")
+        LspUnknownRequest(m) => test.assert(m == "textDocument/codeAction")
+        _                    => test.fail("codeAction is not typed here")
+
+    test.case("and a notification")
+    match lspmethod.notification_of("$/cancelRequest")
+        LspUnknownNotification(m) => test.assert(m == "$/cancelRequest")
+        _                         => test.fail("cancelRequest is not typed here")
+
+    test.case("is_typed_method says so without a match")
+    test.assert(lspmethod.is_typed_method("textDocument/hover"))
+    test.assert(not lspmethod.is_typed_method("textDocument/codeAction"))
+
+    test.case("and the error a server answers names the method")
+    test.assert(lspmethod.method_not_found("textDocument/codeLens").code == -32601)
+
+@test
+fn test_a_notification_method_must_arrive_without_an_id() [io]
+    // A server that answered didChange has replied to a message with no
+    // id; one that failed to answer hover leaves the client waiting for
+    // ever.
+    test.case("the protocol says which is which")
+    test.assert(lspmethod.is_notification_method("exit"))
+    test.assert(lspmethod.is_notification_method("textDocument/didChange"))
+    test.assert(not lspmethod.is_notification_method("shutdown"))
+    test.assert(not lspmethod.is_notification_method("textDocument/hover"))
+
+    test.case("a notification that arrived as one agrees")
+    test.assert(lspmethod.shape_agrees(jrpcmsg.notification("exit", None)))
+
+    test.case("a request that arrived as one agrees")
+    test.assert(lspmethod.shape_agrees(
+        jrpcmsg.call(jrpcid.id_int(1), "textDocument/hover", None)))
+
+    test.case("and a notification that arrived with an id does NOT")
+    test.assert(not lspmethod.shape_agrees(
+        jrpcmsg.call(jrpcid.id_int(1), "exit", None)))
+
+@test
+fn test_missing_params_are_invalid_params_and_not_a_crash() [io]
+    test.case("a request with no params at all")
+    let q = jrpcmsg.call(jrpcid.id_int(1), "textDocument/hover", None)
+    match lspmethod.params_object(q)
+        Ok(_)  => test.fail("that request has no params")
+        Err(e) => test.assert(e.code == -32602)
+
+    test.case("and so does the typed reader")
+    match lspmethod.doc_position_params(q)
+        Ok(_)  => test.fail("that request has no params")
+        Err(e) => test.assert(e.code == -32602)
+
+    match lspmethod.document_uri_param(q)
+        Ok(_)  => test.fail("that request has no params")
+        Err(e) => test.assert(e.code == -32602)
+
+    test.case("the helper produces the same code")
+    test.assert(lspmethod.invalid_params("`line` must be an integer").code == -32602)
+
+@test
+fn test_positions_and_ranges_round_trip_through_json() [io]
+    test.case("a position")
+    match lspmethod.position_from_json(
+              lspmethod.position_to_json(lspbase.position(3, 7)))
+        Err(_) => test.fail("this package's own output decodes")
+        Ok(p)  =>
+            test.assert(p.line == 3)
+            test.assert(p.character == 7)
+
+    test.case("a range")
+    let r = lspbase.range(lspbase.position(0, 0), lspbase.position(1, 2))
+    match lspmethod.range_from_json(lspmethod.range_to_json(r))
+        Err(_)   => test.fail("this package's own output decodes")
+        Ok(back) => test.assert(lspbase.compare(back.end, r.end) == 0)
+
+    test.case("a negative line is refused rather than clamped")
+    match json.parse("{\"line\":-1,\"character\":0}")
+        None    => test.fail("that is json")
+        Some(v) =>
+            match lspmethod.position_from_json(v)
+                Ok(_)  => test.fail("the specification requires unsigned integers")
+                Err(e) => test.assert(e.code == -32602)

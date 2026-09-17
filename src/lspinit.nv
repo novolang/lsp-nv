@@ -1,0 +1,296 @@
+// lspinit.nv — the handshake, and the two things it settles that
+// everything afterwards depends on.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE LIFECYCLE IS STRICT, AND THE STRICTNESS IS USEFUL
+//
+// `initialize` is the first request and no other request may precede
+// it; the server answers with its capabilities; the client sends the
+// `initialized` notification; and only then does ordinary traffic
+// begin.  At the end, `shutdown` is a REQUEST that must be answered,
+// and `exit` is a notification that ends the process.  A server that
+// exited on `shutdown` loses the client's last messages; a server that
+// kept running after `exit` is a process the editor cannot kill.
+//
+// `lspinit.phase_allows` is that state machine as one function, so a
+// server refuses an out-of-order request with the right error instead
+// of answering it and discovering later that it had no workspace root.
+//
+// THE POSITION ENCODING IS SETTLED HERE OR NEVER
+//
+// The client offers a list of encodings in order of preference and the
+// server picks one and reports it back.  From then on every position in
+// both directions is in that encoding, and there is no way to change
+// it.  A server that did not look at the offer and assumed UTF-16 is
+// right today, because UTF-16 is what a client must support — and wrong
+// the day it meets a client that lists UTF-8 first and expects it to be
+// taken.
+//
+// `negotiate_encoding` is the rule: take the first offered encoding the
+// server supports, and fall back to UTF-16 when there is no overlap,
+// because UTF-16 is the one every client is required to handle.
+
+use lspbase
+use lspdoc
+use lspfeat
+
+// Where in the lifecycle a connection is.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${lspinit.phase_allows(LspBeforeInit, "textDocument/hover")}")
+// ```
+pub enum LspPhase
+    // Nothing has arrived yet.  Only `initialize` is allowed; anything
+    // else is answered -32002 `ServerNotInitialized`.
+    LspBeforeInit
+    // `initialize` has been answered and `initialized` has not
+    // arrived.  The client may send nothing but `initialized` and
+    // `exit`.
+    LspInitializing
+    // Ordinary traffic.
+    LspRunning
+    // `shutdown` has been answered.  Every request is now refused with
+    // `InvalidRequest`, and the only thing left to receive is `exit`.
+    LspShuttingDown
+
+// What the client can do, in the parts this package covers.
+//
+// A server asks these before it answers anything: sending a markdown
+// hover to a client that supports only plain text shows a user the
+// asterisks, and sending a resource operation to a client that cannot
+// do them makes it refuse the whole edit.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${list.len(lspinit.client_capabilities([]).position_encodings)}")
+// ```
+pub struct LspClientCapabilities
+    // The position encodings the client offers, IN ORDER OF
+    // PREFERENCE.  An empty list means the client said nothing, which
+    // means UTF-16.
+    position_encodings: [lspbase.LspPositionEncoding]
+    // The markup kinds the client can render for hovers and
+    // completion documentation.
+    markup_kinds: [lspbase.LspMarkupKind]
+    // Whether the client can apply file creations, renames and
+    // deletions inside a workspace edit.
+    resource_operations: Bool
+    // Whether the client will send `textDocument/prepareRename` before
+    // a rename.  A server that offers a placeholder to a client that
+    // does not ask has done work nobody sees.
+    prepare_rename: Bool
+    // Whether the client handles a completion item's
+    // `additionalTextEdits` — the import a completion needs.  A server
+    // that sends them to a client that does not gets the completion
+    // and not the import.
+    completion_additional_edits: Bool
+    // Whether the client can show a diagnostic's related information
+    // as a link.  A server that has it and a client that cannot show
+    // it should fold it into the message.
+    diagnostic_related_information: Bool
+
+// What the server can do, in the parts this package covers.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${lspinit.default_server_capabilities().hover}")   // false
+// ```
+pub struct LspServerCapabilities
+    // THE ENCODING, settled.  Everything afterwards is in these units,
+    // and there is no way to change it later.
+    position_encoding: lspbase.LspPositionEncoding
+    // How the client should send changes.
+    text_document_sync: lspdoc.LspSyncKind
+    // Whether the server answers `textDocument/completion`.
+    completion: Bool
+    // The characters that should make an editor ask for completions
+    // without the user pressing anything: `"."`, `":"`.  Empty means
+    // the client decides, which in practice means it asks on every
+    // identifier character.
+    completion_trigger_characters: [Str]
+    // Whether the server answers `textDocument/hover`.
+    hover: Bool
+    // Whether the server answers `textDocument/definition`.
+    definition: Bool
+    // Whether the server answers `textDocument/references`.
+    references: Bool
+    // Whether the server answers `textDocument/rename`.
+    rename: Bool
+    // Whether the server answers `textDocument/prepareRename`, which
+    // it may only do if it answers `rename` too.
+    prepare_rename: Bool
+    // Whether the server answers `textDocument/formatting`.
+    formatting: Bool
+    // Whether the server answers `textDocument/rangeFormatting`.
+    range_formatting: Bool
+    // Whether the server answers `textDocument/semanticTokens/full`.
+    semantic_tokens: Bool
+    // The legend the semantic token indices refer to.  Sent ONCE,
+    // here, and a client that never saw it cannot colour anything.
+    semantic_legend: lspfeat.LspSemanticLegend
+
+// What a client sends with `initialize`, in the parts this package
+// covers.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println(lspinit.initialize_params("file:///w", "editor",
+//         lspinit.client_capabilities([])).root_uri)
+// ```
+pub struct LspInitializeParams
+    // The workspace's root, or `""` when the client opened a single
+    // file with no folder.  A server that assumed a root is a server
+    // that crashes on a scratch file.
+    root_uri: Str
+    // What the client calls itself, for a log and for the two or three
+    // places a server has to work around a particular one.
+    client_name: Str
+    // What the client can do.
+    capabilities: LspClientCapabilities
+
+// A client's capabilities.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${lspinit.client_capabilities([LspUtf8]).resource_operations}")
+// ```
+pub fn client_capabilities(encodings: [lspbase.LspPositionEncoding]) -> LspClientCapabilities []
+    todo("lsp-nv.lspinit.client_capabilities")
+
+// A server's capabilities with everything off and UTF-16 chosen.
+//
+// The starting point a server narrows: turning a feature ON is a
+// statement that it is implemented, so the default that claims nothing
+// is the one that cannot lie.  A server that started from everything on
+// answers requests it cannot serve, and a client that asked gets an
+// error where it expected a result.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${lspinit.default_server_capabilities().completion}")   // false
+// ```
+pub fn default_server_capabilities() -> LspServerCapabilities []
+    todo("lsp-nv.lspinit.default_server_capabilities")
+
+// Initialize parameters.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println(lspinit.initialize_params("", "x",
+//         lspinit.client_capabilities([])).client_name)      // x
+// ```
+pub fn initialize_params(root_uri: Str, client_name: Str,
+                         capabilities: LspClientCapabilities) -> LspInitializeParams []
+    todo("lsp-nv.lspinit.initialize_params")
+
+// The encoding to use, from what the client offered and what the server
+// supports.
+//
+// THE FUNCTION THE HANDSHAKE EXISTS FOR.  The first offered encoding
+// the server supports wins, in the CLIENT's order of preference —
+// because the offer is a preference list and taking the server's
+// favourite from it defeats the point.  With no overlap, or with an
+// empty offer, the answer is UTF-16: it is the encoding every client is
+// required to handle, so it is the one that is always safe.
+//
+// ```novo
+// use lspbase
+// use lspinit
+//
+// fn main() [io]
+//     println(lspbase.encoding_name(
+//         lspinit.negotiate_encoding([LspUtf8, LspUtf16], [LspUtf16])))   // utf-16
+// ```
+pub fn negotiate_encoding(offered: [lspbase.LspPositionEncoding],
+                          supported: [lspbase.LspPositionEncoding]) -> lspbase.LspPositionEncoding []
+    todo("lsp-nv.lspinit.negotiate_encoding")
+
+// Whether a method may be sent in this phase.
+//
+// The lifecycle as one function.  `initialize` only before
+// initialisation; `initialized` and `exit` only while initializing;
+// everything while running; nothing but `exit` once shutting down.
+//
+// A server that answered a request before `initialize` has answered
+// without a workspace root, and a server that answered one after
+// `shutdown` is doing work whose result nobody will read.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${lspinit.phase_allows(LspRunning, "textDocument/hover")}")
+//     println("${lspinit.phase_allows(LspShuttingDown, "textDocument/hover")}")
+// ```
+pub fn phase_allows(phase: LspPhase, method: Str) -> Bool []
+    todo("lsp-nv.lspinit.phase_allows")
+
+// The phase a connection moves to when a method is handled.
+//
+// `initialize` moves to `LspInitializing`, `initialized` to
+// `LspRunning`, `shutdown` to `LspShuttingDown`, and everything else
+// leaves the phase alone.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${lspinit.phase_allows(
+//         lspinit.next_phase(LspBeforeInit, "initialize"), "initialized")}")
+// ```
+pub fn next_phase(phase: LspPhase, method: Str) -> LspPhase []
+    todo("lsp-nv.lspinit.next_phase")
+
+// The JSON-RPC error code for a request that arrived in the wrong
+// phase.
+//
+// -32002 `ServerNotInitialized` before initialisation, and -32600
+// `InvalidRequest` after `shutdown`.  The specification reserves the
+// first inside JSON-RPC's own reserved block, which is why it is named
+// here rather than built with `jrpcerr.server_error`: -32002 is outside
+// the -32099 to -32000 range that function guards.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("${lspinit.phase_error_code(LspBeforeInit)}")  // -32002
+// ```
+pub fn phase_error_code(phase: LspPhase) -> Int []
+    todo("lsp-nv.lspinit.phase_error_code")
+
+// Whether the server's capabilities are consistent with themselves.
+//
+// `prepare_rename` without `rename`, and `semantic_tokens` with an
+// empty legend, are both capabilities a client reads as a promise the
+// server cannot keep.  A server calls this once at start-up, where the
+// message can name the field; left to run time the same faults arrive
+// as a stream of errors that look like the client's fault.
+//
+// Answers the name of the first inconsistent field, or `""`.
+//
+// ```novo
+// use lspinit
+//
+// fn main() [io]
+//     println("[${lspinit.check_capabilities(
+//         lspinit.default_server_capabilities())}]")         // []
+// ```
+pub fn check_capabilities(c: LspServerCapabilities) -> Str []
+    todo("lsp-nv.lspinit.check_capabilities")

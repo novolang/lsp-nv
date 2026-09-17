@@ -1,0 +1,292 @@
+// lspbase_tests.nv — the API suite for positions, ranges, the position
+// encoding, documents and diagnostics.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: lsp-nv.<module>.<fn>`.
+//
+// THE CASES ARE THE ONES THAT MAKE A LANGUAGE SERVER WRONG IN
+// PRODUCTION AND RIGHT ON ITS AUTHOR's MACHINE: a line with a character
+// outside ASCII, a range whose end is exclusive, an edit list whose
+// ranges overlap, and a set of diagnostics published without a version.
+// Each names the part of LSP 3.17 it comes from.
+
+use std.test
+use std.list
+use lspbase
+use lspdoc
+use lspdiag
+
+@test
+fn test_a_character_offset_is_utf16_code_units_by_default() [io]
+    // The single most common bug in a language server: a server that
+    // counted bytes is one column out on every line with an accent in
+    // it.
+    test.case("ASCII: all three encodings agree")
+    test.assert(lspbase.line_length("let x = 1", LspUtf16) == 9)
+    test.assert(lspbase.line_length("let x = 1", LspUtf8) == 9)
+    test.assert(lspbase.line_length("let x = 1", LspUtf32) == 9)
+
+    test.case("an accented letter is one UTF-16 unit and two bytes")
+    test.assert(lspbase.line_length("é", LspUtf16) == 1)
+    test.assert(lspbase.line_length("é", LspUtf8) == 2)
+    test.assert(lspbase.line_length("é", LspUtf32) == 1)
+
+    test.case("an emoji is TWO UTF-16 units, which is where a character count fails")
+    test.assert(lspbase.line_length("😀", LspUtf16) == 2)
+    test.assert(lspbase.line_length("😀", LspUtf32) == 1)
+    test.assert(lspbase.line_length("😀", LspUtf8) == 4)
+
+@test
+fn test_the_two_offset_conversions_are_inverse() [io]
+    test.case("a byte offset from a UTF-16 character offset")
+    test.assert(lspbase.byte_offset("éx", 1, LspUtf16) == 2)
+
+    test.case("and back again")
+    test.assert(lspbase.character_offset("éx", 2, LspUtf16) == 1)
+
+    test.case("under UTF-8 they are the same number")
+    test.assert(lspbase.byte_offset("éx", 2, LspUtf8) == 2)
+
+    test.case("an offset past the end clamps to the line's byte length")
+    // The specification says a client may send one; a server clamps
+    // rather than refusing.
+    test.assert(lspbase.byte_offset("abc", 99, LspUtf16) == 3)
+
+@test
+fn test_a_ranges_end_is_exclusive() [io]
+    let r = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 4))
+
+    test.case("the start is inside")
+    test.assert(lspbase.contains(r, lspbase.position(0, 0)))
+
+    test.case("the position before the end is inside")
+    test.assert(lspbase.contains(r, lspbase.position(0, 3)))
+
+    test.case("and the end itself is NOT")
+    test.assert(not lspbase.contains(r, lspbase.position(0, 4)))
+
+    test.case("two ranges that merely touch do not overlap")
+    let a = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 2))
+    let b = lspbase.range(lspbase.position(0, 2), lspbase.position(0, 4))
+    test.assert(not lspbase.overlaps(a, b))
+
+    test.case("but two that share one position do")
+    let c = lspbase.range(lspbase.position(0, 1), lspbase.position(0, 3))
+    test.assert(lspbase.overlaps(a, c))
+
+@test
+fn test_an_empty_range_is_a_cursor_and_is_legal() [io]
+    test.case("start equal to end")
+    let cursor = lspbase.at(lspbase.position(2, 5))
+    test.assert(lspbase.is_empty_range(cursor))
+
+    test.case("and it contains nothing, not even its own position")
+    test.assert(not lspbase.contains(cursor, lspbase.position(2, 5)))
+
+    test.case("a non-empty range is not empty")
+    test.assert(not lspbase.is_empty_range(
+        lspbase.range(lspbase.position(0, 0), lspbase.position(0, 1))))
+
+@test
+fn test_positions_compare_by_line_then_character() [io]
+    test.case("an earlier line is less whatever its character is")
+    test.assert(lspbase.compare(lspbase.position(0, 99), lspbase.position(1, 0)) < 0)
+
+    test.case("the same line compares by character")
+    test.assert(lspbase.compare(lspbase.position(1, 1), lspbase.position(1, 2)) < 0)
+
+    test.case("and equal positions compare equal")
+    test.assert(lspbase.compare(lspbase.position(1, 1), lspbase.position(1, 1)) == 0)
+
+@test
+fn test_the_encoding_names_are_the_wires() [io]
+    test.case("the three names")
+    test.assert(lspbase.encoding_name(LspUtf16) == "utf-16")
+    test.assert(lspbase.encoding_name(LspUtf8) == "utf-8")
+    test.assert(lspbase.encoding_name(LspUtf32) == "utf-32")
+
+    test.case("and they parse back")
+    match lspbase.encoding_named("utf-8")
+        None    => test.fail("utf-8 is an encoding")
+        Some(e) => test.assert(lspbase.encoding_name(e) == "utf-8")
+
+    test.case("an unknown name is None rather than a default")
+    match lspbase.encoding_named("latin-1")
+        Some(_) => test.fail("that is not a position encoding")
+        None    => test.assert(true)
+
+@test
+fn test_the_markup_kinds_and_the_edit_helpers() [io]
+    test.case("the markup kind names are the wire's")
+    test.assert(lspbase.markup_kind_name(LspPlainText) == "plaintext")
+    test.assert(lspbase.markup_kind_name(LspMarkdown) == "markdown")
+
+    test.case("markup carries its kind and its value")
+    test.assert(lspbase.markup(LspMarkdown, "**x**").value == "**x**")
+
+    test.case("a text edit over an empty range inserts")
+    let e = lspbase.text_edit(lspbase.at(lspbase.position(0, 0)), "let ")
+    test.assert(lspbase.is_empty_range(e.range))
+    test.assert(e.new_text == "let ")
+
+    test.case("and an edit with empty text deletes")
+    let d = lspbase.text_edit(
+        lspbase.range(lspbase.position(0, 0), lspbase.position(0, 4)), "")
+    test.assert(d.new_text == "")
+
+@test
+fn test_a_location_and_a_location_link() [io]
+    let r = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 3))
+
+    test.case("a location is a uri and a range")
+    test.assert(lspbase.location("file:///a.nv", r).uri == "file:///a.nv")
+
+    test.case("a link's selection range is inside its target range")
+    let whole = lspbase.range(lspbase.position(0, 0), lspbase.position(9, 0))
+    let name = lspbase.range(lspbase.position(0, 3), lspbase.position(0, 7))
+    let link = lspbase.location_link("file:///a.nv", whole, name)
+    test.assert(lspbase.contains(link.target_range, link.target_selection_range.start))
+
+@test
+fn test_the_version_is_a_fence_and_not_a_counter() [io]
+    // A notification carrying a version the server already holds is a
+    // duplicate, and a server that reapplied it applied the same edit
+    // twice.
+    test.case("a greater version is newer")
+    test.assert(lspdoc.is_newer(5, 4))
+
+    test.case("an equal one is NOT")
+    test.assert(not lspdoc.is_newer(4, 4))
+
+    test.case("and an older one is not either")
+    test.assert(not lspdoc.is_newer(3, 4))
+
+@test
+fn test_the_sync_kinds_are_numbered_not_named_on_the_wire() [io]
+    test.case("0, 1 and 2")
+    test.assert(lspdoc.sync_kind_code(LspSyncNone) == 0)
+    test.assert(lspdoc.sync_kind_code(LspSyncFull) == 1)
+    test.assert(lspdoc.sync_kind_code(LspSyncIncremental) == 2)
+
+    test.case("and they parse back")
+    match lspdoc.sync_kind_of(2)
+        None    => test.fail("2 is incremental")
+        Some(k) => test.assert(lspdoc.sync_kind_code(k) == 2)
+
+    test.case("a number outside the three is None")
+    match lspdoc.sync_kind_of(3)
+        Some(_) => test.fail("there are three sync kinds")
+        None    => test.assert(true)
+
+@test
+fn test_changes_apply_in_order_against_the_previous_state() [io]
+    // Applying them out of order, or computing every offset against the
+    // original, corrupts the document silently.
+    test.case("a full-text change replaces everything")
+    test.assert(lspdoc.is_full_change(LspFullText("x")))
+    match lspdoc.apply_change("abc", LspFullText("xyz"), LspUtf16)
+        None    => test.fail("a full change always applies")
+        Some(t) => test.assert(t == "xyz")
+
+    test.case("a range change replaces its span")
+    let r = lspbase.range(lspbase.position(0, 0), lspbase.position(0, 1))
+    test.assert(not lspdoc.is_full_change(LspRangeChange(r, "X")))
+    match lspdoc.apply_change("abc", LspRangeChange(r, "X"), LspUtf16)
+        None    => test.fail("that range exists")
+        Some(t) => test.assert(t == "Xbc")
+
+    test.case("two changes: the second is against what the first left")
+    let first = LspRangeChange(
+        lspbase.range(lspbase.position(0, 0), lspbase.position(0, 1)), "XY")
+    let second = LspRangeChange(
+        lspbase.range(lspbase.position(0, 2), lspbase.position(0, 3)), "")
+    match lspdoc.apply_changes("abc", [first, second], LspUtf16)
+        None    => test.fail("both ranges exist as they are applied")
+        Some(t) => test.assert(t == "XYc")
+
+    test.case("a range out of the text applies nothing")
+    let far = LspRangeChange(
+        lspbase.range(lspbase.position(99, 0), lspbase.position(99, 1)), "x")
+    match lspdoc.apply_changes("abc", [far], LspUtf16)
+        Some(_) => test.fail("line 99 is not in a three-character document")
+        None    => test.assert(true)
+
+@test
+fn test_publishing_diagnostics_replaces_the_whole_set() [io]
+    // There is no add and no remove.  A server that fixed the last
+    // error and published nothing leaves the squiggle on the screen for
+    // ever.
+    test.case("clear is an empty list at a version")
+    let c = lspdiag.clear("file:///a.nv", 4)
+    test.assert(list.len(c.diagnostics) == 0)
+    test.assert(c.version == 4)
+    test.assert(c.uri == "file:///a.nv")
+
+    test.case("a publication carries its version so a stale one can be dropped")
+    let d = lspdiag.error(lspbase.at(lspbase.position(0, 0)), "undefined name")
+    test.assert(lspdiag.publish("file:///a.nv", 7, [d]).version == 7)
+
+@test
+fn test_the_severities_and_tags_are_numbered() [io]
+    test.case("1 to 4, in that order")
+    test.assert(lspdiag.severity_code(LspError) == 1)
+    test.assert(lspdiag.severity_code(LspWarning) == 2)
+    test.assert(lspdiag.severity_code(LspInformation) == 3)
+    test.assert(lspdiag.severity_code(LspHint) == 4)
+
+    test.case("and they parse back")
+    match lspdiag.severity_of(1)
+        None    => test.fail("1 is an error")
+        Some(s) => test.assert(lspdiag.severity_code(s) == 1)
+
+    test.case("0 is not a severity")
+    match lspdiag.severity_of(0)
+        Some(_) => test.fail("the severities are 1 to 4")
+        None    => test.assert(true)
+
+    test.case("the two tags are 1 and 2")
+    test.assert(lspdiag.tag_code(LspUnnecessary) == 1)
+    test.assert(lspdiag.tag_code(LspDeprecated) == 2)
+
+@test
+fn test_a_diagnostics_defaults_and_its_attachments() [io]
+    let r = lspbase.at(lspbase.position(1, 1))
+
+    test.case("error and warning differ only in severity")
+    test.assert(lspdiag.severity_code(lspdiag.error(r, "x").severity) == 1)
+    test.assert(lspdiag.severity_code(lspdiag.warning(r, "x").severity) == 2)
+
+    test.case("the full constructor carries the code and the source")
+    let d = lspdiag.diagnostic(r, LspError, "E2001", "novoc", "type error")
+    test.assert(d.code == "E2001")
+    test.assert(d.source == "novoc")
+
+    test.case("tags and related information attach without changing the rest")
+    test.assert(list.len(lspdiag.with_tags(d, [LspUnnecessary]).tags) == 1)
+    let loc = lspbase.location("file:///b.nv", r)
+    let rel = lspdiag.related(loc, "first defined here")
+    test.assert(list.len(lspdiag.with_related(d, [rel]).related_information) == 1)
+    test.assert(rel.message == "first defined here")
+
+@test
+fn test_the_diagnostics_at_a_position_use_the_exclusive_end() [io]
+    let d = lspdiag.error(
+        lspbase.range(lspbase.position(0, 0), lspbase.position(0, 4)), "x")
+
+    test.case("a position inside is covered")
+    test.assert(list.len(lspdiag.at_position([d], lspbase.position(0, 2))) == 1)
+
+    test.case("the end position is not")
+    test.assert(list.len(lspdiag.at_position([d], lspbase.position(0, 4))) == 0)
+
+@test
+fn test_a_document_carries_its_language_and_its_version() [io]
+    test.case("an opened document")
+    let doc = lspdoc.text_document("file:///a.nv", "novo", 1, "let x = 1")
+    test.assert(doc.language_id == "novo")
+    test.assert(doc.version == 1)
+    test.assert(doc.text == "let x = 1")
+
+    test.case("the identifiers carry the uri unchanged")
+    test.assert(lspdoc.document_id("file:///a%20b.nv").uri == "file:///a%20b.nv")
+    test.assert(lspdoc.versioned_id("file:///a.nv", 3).version == 3)

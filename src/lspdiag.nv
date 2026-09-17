@@ -1,0 +1,298 @@
+// lspdiag.nv — what a server tells a user is wrong, and the two facts
+// about publishing it that decide whether the user sees the truth.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// DIAGNOSTICS ARE PUBLISHED FOR A WHOLE DOCUMENT, AND THAT IS WHY AN
+// EMPTY LIST MATTERS
+//
+// `textDocument/publishDiagnostics` replaces every diagnostic the
+// client holds for that URI.  There is no "add" and no "remove": a
+// server that fixed the last error in a file and published nothing
+// leaves the squiggle on the screen for ever.  Publishing an EMPTY LIST
+// is how a file is cleared, and it is the message servers forget to
+// send.
+//
+// THE VERSION IS WHAT MAKES THEM TRUSTWORTHY
+//
+// A diagnostic set computed against version 7 and delivered while the
+// editor is on version 9 is wrong, and the client is the only party
+// that can tell.  `LspPublishDiagnostics.version` is what lets it
+// discard the stale set instead of drawing it.  It is optional in the
+// protocol and this package makes it a field rather than an option,
+// with -1 meaning "not stated", because a server that has the version
+// and does not send it has chosen to show a user stale squiggles.
+
+use lspbase
+
+// How bad it is.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     println(lspdiag.severity_code(LspError))              // 1
+// ```
+pub enum LspSeverity
+    // An error.  Shown in red, and counted in the problems panel.
+    LspError
+    // A warning.
+    LspWarning
+    // Information: not a problem, but worth saying.
+    LspInformation
+    // A hint.  Usually drawn as a faint underline or not at all, and
+    // the severity a "this could be simpler" suggestion takes.
+    LspHint
+
+// An extra fact about a diagnostic that changes how a client draws it.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     println(lspdiag.tag_code(LspUnnecessary))             // 1
+// ```
+pub enum LspDiagnosticTag
+    // The code is unnecessary: an unused import, an unreachable
+    // branch.  Clients grey it out rather than underlining it, which
+    // is the right treatment for something that is not an error.
+    LspUnnecessary
+    // The code is deprecated.  Clients strike it through.
+    LspDeprecated
+
+// Somewhere else the reader should look.
+//
+// A duplicate definition's diagnostic points at the second one and
+// carries one of these pointing at the first.  A client shows it as a
+// link, and a user who cannot follow it has to search.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     let loc = lspbase.location("file:///a.nv",
+//                                lspbase.at(lspbase.position(0, 0)))
+//     println(lspdiag.related(loc, "first defined here").message)
+// ```
+pub struct LspRelatedInformation
+    // Where.
+    location: lspbase.LspLocation
+    // Why the reader should look there, in one line.
+    message: Str
+
+// One thing that is wrong.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     let r = lspbase.at(lspbase.position(0, 0))
+//     println(lspdiag.error(r, "undefined name").message)
+// ```
+pub struct LspDiagnostic
+    // What the diagnostic is about.  An empty range is legal and
+    // points at a cursor position; a client draws it as a zero-width
+    // marker rather than refusing it.
+    range: lspbase.LspRange
+    // How bad.
+    severity: LspSeverity
+    // The machine-readable code, as text: `"E2001"`, `"unused-import"`.
+    // Empty when the server has none.  A client filters and suppresses
+    // by this, so a server that left it empty gives a user no way to
+    // turn one rule off.
+    code: Str
+    // A URI where the code is documented, or `""`.  A client turns the
+    // code into a link.
+    code_description: Str
+    // Who produced it: `"novoc"`, `"novofmt"`.  Shown beside the
+    // message so a user with three servers running knows which one is
+    // complaining.
+    source: Str
+    // The message, for a person.
+    message: Str
+    // Extra facts that change how it is drawn.
+    tags: [LspDiagnosticTag]
+    // Somewhere else to look.
+    related_information: [LspRelatedInformation]
+
+// Every diagnostic a server holds for one document.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     println(lspdiag.publish("file:///a.nv", 4, []).version)   // 4
+// ```
+pub struct LspPublishDiagnostics
+    // Which document.
+    uri: Str
+    // Which version of it these were computed against, or -1 when the
+    // server does not state one.  A client discards a set whose
+    // version is older than the document it holds, which is the only
+    // thing that stops a user seeing squiggles under the wrong words.
+    version: Int
+    // The diagnostics.  THIS REPLACES EVERYTHING the client holds for
+    // this URI, so an empty list is how a file is cleared and is a
+    // message a server must actually send.
+    diagnostics: [LspDiagnostic]
+
+// A diagnostic with every field.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     let r = lspbase.at(lspbase.position(0, 0))
+//     println(lspdiag.diagnostic(r, LspWarning, "E1", "novoc", "unused").code)
+// ```
+pub fn diagnostic(r: lspbase.LspRange, severity: LspSeverity, code: Str, source: Str,
+                  message: Str) -> LspDiagnostic []
+    todo("lsp-nv.lspdiag.diagnostic")
+
+// An error diagnostic with no code and no source.
+//
+// The shortest thing a server can produce, for a server that has one
+// kind of problem to report.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     println(lspdiag.severity_code(
+//         lspdiag.error(lspbase.at(lspbase.position(0, 0)), "bad").severity))
+// ```
+pub fn error(r: lspbase.LspRange, message: Str) -> LspDiagnostic []
+    todo("lsp-nv.lspdiag.error")
+
+// A warning diagnostic with no code and no source.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     println(lspdiag.warning(lspbase.at(lspbase.position(0, 0)), "hm").message)
+// ```
+pub fn warning(r: lspbase.LspRange, message: Str) -> LspDiagnostic []
+    todo("lsp-nv.lspdiag.warning")
+
+// The same diagnostic with tags attached.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     let d = lspdiag.warning(lspbase.at(lspbase.position(0, 0)), "unused")
+//     println("${list.len(lspdiag.with_tags(d, [LspUnnecessary]).tags)}")
+// ```
+pub fn with_tags(d: LspDiagnostic, tags: [LspDiagnosticTag]) -> LspDiagnostic []
+    todo("lsp-nv.lspdiag.with_tags")
+
+// The same diagnostic with related information attached.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     let d = lspdiag.error(lspbase.at(lspbase.position(0, 0)), "duplicate")
+//     println("${list.len(lspdiag.with_related(d, []).related_information)}")
+// ```
+pub fn with_related(d: LspDiagnostic, related: [LspRelatedInformation]) -> LspDiagnostic []
+    todo("lsp-nv.lspdiag.with_related")
+
+// Related information.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     let loc = lspbase.location("file:///a.nv", lspbase.at(lspbase.position(0, 0)))
+//     println(lspdiag.related(loc, "here").message)
+// ```
+pub fn related(location: lspbase.LspLocation, message: Str) -> LspRelatedInformation []
+    todo("lsp-nv.lspdiag.related")
+
+// A publication for one document at one version.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     println("${list.len(lspdiag.publish("file:///a.nv", 1, []).diagnostics)}")
+// ```
+pub fn publish(uri: Str, version: Int, diagnostics: [LspDiagnostic]) -> LspPublishDiagnostics []
+    todo("lsp-nv.lspdiag.publish")
+
+// The publication that CLEARS a document.
+//
+// An empty list at the given version.  Named, rather than left to each
+// server to spell as `publish(uri, v, [])`, because the message a
+// server forgets to send is exactly this one: a file whose last error
+// was fixed keeps its squiggle until something replaces it.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     println("${list.len(lspdiag.clear("file:///a.nv", 2).diagnostics)}")   // 0
+// ```
+pub fn clear(uri: Str, version: Int) -> LspPublishDiagnostics []
+    todo("lsp-nv.lspdiag.clear")
+
+// The number a severity has on the wire: 1 to 4.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     println(lspdiag.severity_code(LspHint))               // 4
+// ```
+pub fn severity_code(s: LspSeverity) -> Int []
+    todo("lsp-nv.lspdiag.severity_code")
+
+// The severity a wire number denotes, or `None`.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     match lspdiag.severity_of(1)
+//         None    => println("not a severity")
+//         Some(_) => println("an error")
+// ```
+pub fn severity_of(code: Int) -> ?LspSeverity []
+    todo("lsp-nv.lspdiag.severity_of")
+
+// The number a tag has on the wire: 1 or 2.
+//
+// ```novo
+// use lspdiag
+//
+// fn main() [io]
+//     println(lspdiag.tag_code(LspDeprecated))              // 2
+// ```
+pub fn tag_code(t: LspDiagnosticTag) -> Int []
+    todo("lsp-nv.lspdiag.tag_code")
+
+// The diagnostics in a list that cover a position.
+//
+// What a client asks when the cursor moves and what a server needs to
+// offer a code action.  Uses the exclusive-end rule, so a diagnostic
+// ending at the cursor does not cover it.
+//
+// ```novo
+// use lspbase
+// use lspdiag
+//
+// fn main() [io]
+//     println("${list.len(lspdiag.at_position([], lspbase.position(0, 0)))}")
+// ```
+pub fn at_position(diagnostics: [LspDiagnostic], p: lspbase.LspPosition) -> [LspDiagnostic] []
+    todo("lsp-nv.lspdiag.at_position")

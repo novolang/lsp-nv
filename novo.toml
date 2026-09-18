@@ -46,4 +46,4 @@ novo        = ">= 0.9.0"
 # the only thing that resolves at all.  The publish round rewrites it to
 # `^0.0.1` before the tarball is built, because a path dependency in a
 # tarball sends the consumer to a directory that does not exist.
-jsonrpc-nv = { path = "../jsonrpc-nv" }
+jsonrpc-nv = "^0.0.1"
